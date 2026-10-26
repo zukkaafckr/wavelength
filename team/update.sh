@@ -14,6 +14,22 @@ if [ $AUTO = 1 ]; then   # never rebuild (it restarts the app) while someone is 
   idle=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}')
   [ "${idle:-0}" -ge 600 ] || exit 0
 fi
+# names now live in settings (older installs kept them only in team/.personalized): quit the app first, or it rewrites the file
+M_NAME=$(sed -n 's/^name=\(.*\) call=.*/\1/p' team/.personalized 2>/dev/null); M_CALL=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' team/.personalized 2>/dev/null)
+if [ -n "$M_NAME" ] && [ -n "$M_CALL" ] && ! NAME="$M_NAME" CALL="$M_CALL" python3 -c 'import json,os,sys; s=json.load(open(os.path.expanduser("~/.config/atticus/settings.json"))); sys.exit(0 if (s.get("assistantName"),s.get("userCallName"))==(os.environ["NAME"],os.environ["CALL"]) else 1)' 2>/dev/null; then
+[ -n "$WAVELENGTH_TEST" ] || osascript -e 'quit app id "com.atticus.app"' 2>/dev/null || true; for _ in $(seq 1 20); do pgrep -x Atticus >/dev/null || break; sleep 0.5; done
+NAME="$M_NAME" CALL="$M_CALL" python3 - <<'PY'
+import json, os
+p = os.path.expanduser("~/.config/atticus/settings.json")
+try: s = json.load(open(p))
+except (OSError, ValueError): s = {}
+if s.get("assistantName") != os.environ["NAME"] or s.get("userCallName") != os.environ["CALL"]:
+    s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"]); os.makedirs(os.path.dirname(p), exist_ok=True)
+    json.dump(s, open(p, "w"), indent=1)
+PY
+[ -n "$WAVELENGTH_TEST" ] || open -g -a "$HOME/Applications/Atticus.app" 2>/dev/null || true; say_ "Set your assistant's name and call-name in settings."
+fi
+
 git fetch -q origin main 2>>"$LOG" || { say_ "Couldn't reach GitHub (offline or not signed in: run gh auth login, then gh auth setup-git)."; exit 1; }
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && { say_ "Already up to date."; exit 0; }
 
@@ -33,17 +49,6 @@ git reset -q --hard origin/main
 rm -f "$MARK"; python3 team/personalize.py "$NAME" "$CALL" >/dev/null
 
 [ -n "$WAVELENGTH_TEST" ] && { say_ "Test run: updated the files, skipped the voice and rebuild."; exit 0; }
-# names now live in settings (older installs kept them only in team/.personalized): quit the app first, or it rewrites the file
-osascript -e 'quit app id "com.atticus.app"' 2>/dev/null || true; for _ in $(seq 1 20); do pgrep -x Atticus >/dev/null || break; sleep 0.5; done
-NAME="$NAME" CALL="$CALL" python3 - <<'PY'
-import json, os
-p = os.path.expanduser("~/.config/atticus/settings.json")
-try: s = json.load(open(p))
-except (OSError, ValueError): s = {}
-if s.get("assistantName") != os.environ["NAME"] or s.get("userCallName") != os.environ["CALL"]:
-    s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"]); os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump(s, open(p, "w"), indent=1)
-PY
 # 3. refresh the voice, check-ins and greeting recorder, then rebuild (this restarts the app)
 CB="$HOME/.local/share/chatterbox"; Z="$HOME/.local/share/zuka"
 if [ -d "$CB" ]; then cp team/voice/zuka_voice_light.py team/voice/atticus_voice_server.py team/voice/atticus-say "$CB/"; chmod +x "$CB/atticus-say"; fi
