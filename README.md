@@ -28,7 +28,7 @@ answers questions about what's on your screen. You choose its name (Zuka, Nova, 
 Open Claude Code and paste:
 
 ```
-Set up my own copy of this Mac assistant from <REPO-LINK>. Clone it, read its CLAUDE.md first and follow it exactly: before doing anything, ask me my assistant's name, what it should call me, which Mac and how much memory I have, and which voice I want.
+Set up my own copy of this Mac assistant from https://github.com/zukkaafckr/wavelength. Clone it, read its CLAUDE.md first and follow it exactly: before doing anything, ask me my assistant's name, what it should call me, which Mac and how much memory I have, and which voice I want.
 ```
 
 Claude asks four questions, then installs, records your greetings in the voice, and walks you through the permissions.
