@@ -65,7 +65,7 @@ class Names(unittest.TestCase):
 
     def test_swift_menu_and_spoken_lines_use_the_runtime_names(self):
         for text in ('"Ask \\(Prefs.assistantName)"', '"Quit \\(Prefs.assistantName)"', '"\\(Prefs.assistantName) is paused"',
-                     'That one needs Claude, \\(Prefs.callName). ', 'Say yes or no, \\(Prefs.callName).'):
+                     'That one needs Claude\\(Prefs.callSuffix). ', 'Say yes or no\\(Prefs.callSuffix).'):
             self.assertIn(text, SWIFT)
         self.assertNotRegex(SWIFT, r'"(?:[^"\n]*[ ,])?(?:Ask|Pause|Resume|Quit) Zuka')
         code = re.sub(r'//.*', '', SWIFT)

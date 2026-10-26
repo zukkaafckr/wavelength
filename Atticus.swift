@@ -197,7 +197,7 @@ enum Prefs {
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
-        "assistantName": "Zuka", "userCallName": "J", "echoCancel": false, "wakeWord": false]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
+        "assistantName": "Zuka", "userCallName": "J", "echoCancel": false, "wakeWord": false, "converse": true]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
         "meetingNudge", "meetingDetect", "meetingAuto", "fixSetup", "dictateLearn"]
@@ -215,6 +215,8 @@ enum Prefs {
         if values["dictateHotkeyLabel"] as? String == "", values["dictateHotkeyOff"] as? Bool != true, (values["hotkeyMods"] as? Int ?? 0) & (1 << 20) == 0 {
             values["dictateHotkeyCode"] = -2; values["dictateHotkeyMods"] = 1 << 20; values["dictateHotkeyLabel"] = "fn"
         }
+        // The packaged app has no default name for you: until its first-run setup is done it calls you nothing, and replies drop the ", J".
+        if packaged, saved["setupDone"] as? Bool != true, ["", "J"].contains((saved["userCallName"] as? String ?? "").trimmingCharacters(in: .whitespaces)) { values["userCallName"] = "" }
         for (k, v) in managed["values"] as? [String: Any] ?? [:] { values[k] = v }   // the owner's values for managed settings, every launch
         return values   // persisted with the next preference write; legacy keys remain readable
     }()
@@ -238,12 +240,17 @@ enum Prefs {
     }
     static func bool(_ k: String) -> Bool { d[k] as? Bool ?? false }
     static func str(_ k: String) -> String { d[k] as? String ?? "" }
+    // Inside the packaged Wavelength.app (its bundled Python exists); the same test as `runtimeDir`, which is declared later in this file.
+    static let packaged: Bool = Bundle.main.resourcePath.map { FileManager.default.isExecutableFile(atPath: $0 + "/runtime/python/bin/python3") } ?? false
+    // First-run "Make it yours" shows in a packaged app only, and only until it is finished once. The owner's dev build never shows it.
+    static var needsSetup: Bool { packaged && !bool("setupDone") }
     static func nameValue(_ k: String) -> String {   // a name from Settings, trimmed; the default when empty
         let v = str(k).trimmingCharacters(in: .whitespacesAndNewlines)
-        return v.isEmpty ? (defaults[k] as? String ?? "") : v
+        return v.isEmpty ? (k == "userCallName" && packaged ? "" : defaults[k] as? String ?? "") : v   // packaged: no call name unless you set one
     }
     static var assistantName: String { nameValue("assistantName") }
     static var callName: String { nameValue("userCallName") }
+    static var callSuffix: String { callName.isEmpty ? "" : ", " + callName }   // for a sentence's ending: "Done" + ", Sam" + "."
     static func num(_ k: String) -> Double { (d[k] as? NSNumber)?.doubleValue ?? 0 }
 }
 
@@ -1996,7 +2003,11 @@ final class App: NSObject, WKScriptMessageHandler {
             if !zukaVoice { siriVoice() }   // retry for next time: this read uses the fallback after a previous Siri test failed
             shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: (sayHelper ?? "/usr/bin/say")); p.arguments = arguments
             p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
-                guard let self, self.voice === p else { return }; self.voice = nil; if let then { then() } else { self.hide(after: 2) }
+                guard let self, self.voice === p else { return }; self.voice = nil
+                if let then { then() }
+                else if Prefs.bool("converse"), a.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?"), !self.busy, !self.engine.isRunning, self.panel.isVisible, !Prefs.bool("paused") {
+                    self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }   // she asked you something: she listens for the answer (silence closes it)
+                } else { self.hide(after: 2) }
             } }
             try? p.run(); voice = p
         }
@@ -2005,9 +2016,9 @@ final class App: NSObject, WKScriptMessageHandler {
     func askAloud(_ q: String, _ detail: String) {
         guard Prefs.bool("speak") else { return }
         let path = askFile
-        let said = q.hasPrefix("Answering this needs Claude") ? "That one needs Claude, \(Prefs.callName). " + detail
-                 : q.hasPrefix("Start a background helper") ? "Want a background helper on this, \(Prefs.callName)? " + detail
-                 : retryOffer ? q + " Want me to try again?" : q + " Say yes or no, \(Prefs.callName)."
+        let said = q.hasPrefix("Answering this needs Claude") ? "That one needs Claude\(Prefs.callSuffix). " + detail
+                 : q.hasPrefix("Start a background helper") ? "Want a background helper on this\(Prefs.callSuffix)? " + detail
+                 : retryOffer ? q + " Want me to try again?" : q + " Say yes or no\(Prefs.callSuffix)."
         deliver(said) { [weak self] in
             guard let self, self.askFile == path, !self.engine.isRunning else { return }
             self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }   // a pause ends it, silence closes the mic
@@ -4066,6 +4077,139 @@ final class RoutineWake {
 }
 
 // First-run window (ui/onboarding.html): welcome, then each macOS permission with an Allow button, then how to use it.
+// First-run "Make it yours" (packaged app only, until finished once): the person's own assistant name, what it calls them, voice,
+// wake word, greeting, check-ins and work setup, saved with no Claude involved. Personal settings only: Prefs.set refuses a key
+// the owner locked in managed.json, and nothing here touches a developer setting.
+enum PersonalSetup {
+    static let voices = ["warm", "bright", "smooth", "calm", "british", "indian", "jarvis", "deep", "friendly-male", "indian-male"]
+    static let browsers: [(name: String, id: String)] = [("Brave Browser", "com.brave.Browser"), ("Google Chrome", "com.google.Chrome"), ("Arc", "company.thebrowser.Browser"),
+                                                         ("Microsoft Edge", "com.microsoft.edgemac"), ("Safari", "com.apple.Safari")]
+    static let checkinLabel = "com.wavelength.checkin"
+    static let defaultCheckins = "10:00, 14:30, 18:30"
+    static var configDir: String { NSHomeDirectory() + "/.config/atticus" }
+    static var checkinPlistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/" + checkinLabel + ".plist" }
+    static var previewProcess: Process?
+
+    /// Letters, numbers, spaces and hyphens, at most 31 characters (the same rule atticus.py applies when it reads the name).
+    static func cleanName(_ s: String) -> String {
+        let ok = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -"))
+        let kept = String(String.UnicodeScalarView(s.unicodeScalars.filter { ok.contains($0) }))
+        return String(kept.trimmingCharacters(in: .whitespaces).prefix(31)).trimmingCharacters(in: .whitespaces)
+    }
+    static func installedBrowsers() -> [String] { browsers.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.id) != nil }.map { $0.name } }
+    static func defaultBrowser() -> String {
+        guard let url = URL(string: "https://example.com"), let app = NSWorkspace.shared.urlForApplication(toOpen: url), let id = Bundle(url: app)?.bundleIdentifier else { return "" }
+        return browsers.first { $0.id.lowercased() == id.lowercased() }?.name ?? ""
+    }
+    static let browserInfo: (installed: [String], current: String) = (installedBrowsers(), defaultBrowser())   // looked up once
+    static func options() -> [String: Any] {
+        ["need": Prefs.needsSetup, "browsers": browserInfo.installed, "browser": browserInfo.current, "checkins": defaultCheckins, "voices": voices, "hotkey": Prefs.str("hotkeyLabel")]
+    }
+
+    /// "10:00, 14:30, 6pm" -> [(10,0), (14,30), (18,0)]; nil when any of it is not a time.
+    static func parseTimes(_ text: String) -> [(Int, Int)]? {
+        guard let rx = try? NSRegularExpression(pattern: "^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$") else { return nil }
+        var out: [(Int, Int)] = []
+        for part in text.lowercased().split(separator: ",") {
+            let t = part.trimmingCharacters(in: .whitespaces); let r = NSRange(t.startIndex..., in: t)
+            guard let m = rx.firstMatch(in: t, range: r), let hr = Range(m.range(at: 1), in: t), var h = Int(t[hr]) else { return nil }
+            let mn = Range(m.range(at: 2), in: t).flatMap { Int(t[$0]) } ?? 0
+            if let ap = Range(m.range(at: 3), in: t).map({ String(t[$0]) }) { guard (1...12).contains(h) else { return nil }; h = h % 12 + (ap == "pm" ? 12 : 0) }
+            guard (0..<24).contains(h), (0..<60).contains(mn) else { return nil }
+            if !out.contains(where: { $0 == (h, mn) }) { out.append((h, mn)) }
+        }
+        return out.isEmpty || out.count > 12 ? nil : out
+    }
+    static func xml(_ s: String) -> String { s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;") }
+    /// The check-in LaunchAgent: the bundled script at the chosen times, Monday to Saturday (launchd weekdays 1...6).
+    static func plistForCheckins(_ times: [(Int, Int)], runtime rt: String) -> String {
+        let when = (1...6).flatMap { d in times.map { "<dict><key>Weekday</key><integer>\(d)</integer><key>Hour</key><integer>\($0.0)</integer><key>Minute</key><integer>\($0.1)</integer></dict>" } }.joined()
+        let args = [rt + "/python/bin/python3", "-I", rt + "/voice/zuka-checkin", "auto"].map { "<string>\(xml($0))</string>" }.joined()
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+        <key>Label</key><string>\(checkinLabel)</string>
+        <key>ProgramArguments</key><array>\(args)</array>
+        <key>StartCalendarInterval</key><array>\(when)</array>
+        </dict></plist>
+        """
+    }
+    @discardableResult static func launchctl(_ args: [String]) -> Int32 {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = args
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus } catch { return -1 }
+    }
+    /// Turn the spoken check-ins on at these times, or off (nil): writes or removes the LaunchAgent and (re)loads it.
+    static func applyCheckins(_ times: [(Int, Int)]?) {
+        let fm = FileManager.default, label = "gui/\(getuid())/" + checkinLabel
+        launchctl(["bootout", label])
+        guard let times, let rt = runtimeDir else { try? fm.removeItem(atPath: checkinPlistPath); return }
+        try? fm.createDirectory(atPath: (checkinPlistPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        guard (try? plistForCheckins(times, runtime: rt).write(toFile: checkinPlistPath, atomically: true, encoding: .utf8)) != nil else { return }
+        launchctl(["bootstrap", "gui/\(getuid())", checkinPlistPath])
+    }
+
+    static func readJSON(_ path: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path)))) as? [String: Any] ?? [:]
+    }
+    static func writeJSON(_ obj: [String: Any], _ path: String) -> Bool {
+        do {
+            try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: path), options: .atomic)
+            return true
+        } catch { return false }
+    }
+    static func writeVoice(_ pick: String) -> Bool { voices.contains(pick) && writeJSON(["pick": pick], configDir + "/voice.json") }
+    static var currentVoice: String { let p = readJSON(configDir + "/voice.json")["pick"] as? String ?? "warm"; return voices.contains(p) ? p : "warm" }
+
+    /// ▶ on a voice: save the pick, then say "Hi <name>, I'm <assistant>." through the app's voice (atticus-say answers with the Mac voice if the bundled one is not up yet).
+    static func preview(voice: String, name: String, call: String) {
+        guard writeVoice(voice) else { return }
+        previewProcess?.terminate()
+        let who = cleanName(name).isEmpty ? "Zuka" : cleanName(name), c = cleanName(call)
+        let p = Process(); p.executableURL = URL(fileURLWithPath: sayHelper ?? "/usr/bin/say")
+        p.arguments = ["--", c.isEmpty ? "Hi, I'm \(who)." : "Hi \(c), I'm \(who)."]
+        try? p.run(); previewProcess = p
+    }
+
+    /// Re-record the greetings in the chosen voice and name once the bundled voice is up (the maker skips quietly when it is not).
+    static func rerecordGreetings() {
+        guard let rt = runtimeDir else { return }
+        let sock = NSHomeDirectory() + "/Library/Caches/Wavelength/voice/voice.sock"
+        DispatchQueue.global().async {
+            for _ in 0..<60 where !FileManager.default.fileExists(atPath: sock) { Thread.sleep(forTimeInterval: 3) }
+            let p = Process(); p.executableURL = URL(fileURLWithPath: rt + "/python/bin/python3"); p.arguments = ["-I", rt + "/voice/make-greetings.py"]
+            p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice; try? p.run()
+        }
+    }
+
+    /// Save the page's choices. Returns an error line for the page, or nil when saved. Order matters: setupDone goes last, so a failure leaves setup to run again.
+    static func save(_ d: [String: Any]) -> String? {
+        let call = cleanName(d["call"] as? String ?? "")
+        guard !call.isEmpty else { return "Tell me what to call you." }
+        let assistant = cleanName(d["name"] as? String ?? "").isEmpty ? "Zuka" : cleanName(d["name"] as? String ?? "")
+        let voice = voices.contains(d["voice"] as? String ?? "") ? (d["voice"] as? String ?? "warm") : "warm"
+        let checkinText = (d["checkins"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        var times: [(Int, Int)]? = nil
+        if !checkinText.isEmpty { guard let t = parseTimes(checkinText) else { return "Check-in times look like 10:00, 14:30, 18:30." }; times = t }
+        let personal: [(String, Any)] = [("assistantName", assistant), ("userCallName", call), ("greet", d["greet"] as? Bool ?? true), ("wakeWord", d["wake"] as? Bool ?? false),
+                                         ("checkins", times == nil ? "" : checkinText)]
+        for (k, v) in personal where !Prefs.locked.contains(k) { if !Prefs.set(k, v) { return "Couldn’t save that. Try again." } }
+        guard writeVoice(voice) else { return "Couldn’t save the voice. Try again." }
+        var w = readJSON(configDir + "/workflow.json")   // work setup: merged, never replaced; blank = skipped
+        if let b = d["browser"] as? String, browsers.contains(where: { $0.name == b }) { w["browser"] = b }
+        if let m = d["music"] as? String, !m.trimmingCharacters(in: .whitespaces).isEmpty { w["music"] = String(m.trimmingCharacters(in: .whitespaces).prefix(80)) }
+        let keep = (d["keepOpen"] as? String ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !keep.isEmpty { w["keepOpen"] = keep }
+        if !w.isEmpty, !writeJSON(w, configDir + "/workflow.json") { return "Couldn’t save your work setup. Try again." }
+        applyCheckins(times)
+        guard Prefs.set("setupDone", true) else { return "Couldn’t save that. Try again." }
+        rerecordGreetings()
+        return nil
+    }
+}
+
 // Shows until finished once; to see it again: defaults delete com.atticus.app onboarded, then restart the app.
 final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
     var win: NSWindow?, web: WKWebView?, timer: Timer?
@@ -4087,6 +4231,7 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         bg.material = .underWindowBackground; bg.blendingMode = .behindWindow; bg.state = .active
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(self, name: "ob")
+        if Prefs.needsSetup { cfg.userContentController.addUserScript(WKUserScript(source: "window.__setup = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true)) }   // packaged, first run: "Make it yours" comes first
         let v = WKWebView(frame: NSRect(x: 0, y: 0, width: 640, height: 612), configuration: cfg)   // top 28 pt stays draggable
         v.setValue(false, forKey: "drawsBackground")
         loadPage(v, "onboarding.html")
@@ -4114,6 +4259,7 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
                 self?.call("ob.prefs", ["meeting": Prefs.bool("meeting"), "draw": Prefs.bool("draw"), "routing": Prefs.str("routing"), "hotkeyLabel": Prefs.str("hotkeyLabel"), "safe": Prefs.bool("safe"),
                                         "dictateMode": Prefs.str("dictateMode"), "dictateHotkeyLabel": Prefs.str("dictateHotkeyLabel"), "globeTaken": globeKeyTaken()])
                 self?.call("ob.server", ["apiBase": Prefs.str("apiBase"), "apiModel": Prefs.str("apiModel")])
+                if Prefs.needsSetup { self?.call("ob.setup", PersonalSetup.options()) }
             }
         }
     }
@@ -4268,6 +4414,12 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let b = m.body as? [String: String] else { return }
         if b["do"] == "done" { return finish() }
+        if b["do"] == "setupPreview" { PersonalSetup.preview(voice: b["voice"] ?? "", name: b["name"] ?? "", call: b["call"] ?? ""); return }
+        if b["do"] == "setupSave" {   // "Make it yours": the page's choices as one JSON string
+            let d = b["data"].flatMap { $0.data(using: .utf8) }.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            let err = PersonalSetup.save(d)
+            call("ob.setupSaved", ["ok": err == nil, "error": err ?? "", "name": Prefs.assistantName, "hotkey": Prefs.str("hotkeyLabel")]); return
+        }
         if b["do"] == "kofi" { openTipJar("setup"); return }
         if b["do"] == "feedback" { Atticus.settings.open(tab: "feedback"); return }
         if b["do"] == "enableAll" { return enableAll(connected: b["connected"] == "true") }
@@ -4586,9 +4738,9 @@ func packagedFirstRun() {
         try? body.write(toFile: login, atomically: true, encoding: .utf8)
         if !Prefs.bool("login") { let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = ["disable", "gui/\(uid)/com.wavelength.app"]; try? p.run() }
     }
-    // greetings in her voice, once the voice is up (no-op when they exist)
+    // greetings in her voice, once the voice is up (no-op when they exist). Not before first-run setup: that records them with the person's own name and voice.
     let greet = home + "/.local/share/zuka/greetings"
-    if !((try? fm.contentsOfDirectory(atPath: greet)) ?? []).contains(where: { $0.hasSuffix(".wav") }) {
+    if !Prefs.needsSetup, !((try? fm.contentsOfDirectory(atPath: greet)) ?? []).contains(where: { $0.hasSuffix(".wav") }) {
         DispatchQueue.global().asyncAfter(deadline: .now() + 45) {
             let p = Process(); p.executableURL = URL(fileURLWithPath: rt + "/python/bin/python3"); p.arguments = ["-I", rt + "/voice/make-greetings.py"]
             p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice; try? p.run()
@@ -4604,7 +4756,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        UserDefaults.standard.bool(forKey: "onboarded") ? settings.open() : onboarding.open()
+        UserDefaults.standard.bool(forKey: "onboarded") && !Prefs.needsSetup ? settings.open() : onboarding.open()
         return false
     }
 }
@@ -4864,7 +5016,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         send("agents", ["count": agentsUI.count])
         send("dictation", DictationData.state())
         js("st.motion(\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion))")
-        var d: [String: Any] = ["prefs": Prefs.d, "mics": microphoneChoices(), "version": Updater.version, "update": Updater.status, "managedUpdates": Updater.managedByNix,
+        var d: [String: Any] = ["prefs": Prefs.d.merging(["voice": PersonalSetup.currentVoice]) { $1 }, "mics": microphoneChoices(), "version": Updater.version, "update": Updater.status, "managedUpdates": Updater.managedByNix,
                                 "hotkeyTaken": !hotkeyRegistered, "dictateHotkeyTaken": !Prefs.str("dictateHotkeyLabel").isEmpty && !dictateHotkeyRegistered, "globeTaken": globeKeyTaken()]
         d["locked"] = Array(Prefs.locked)   // team installs: the owner's settings are hidden here
         let routines = (Prefs.path as NSString).deletingLastPathComponent + "/routines.json"
@@ -5001,6 +5153,26 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
     }
 
     func apply(_ k: String, _ v: Any) {   // one setting changed, from this window or by voice (atticus.py --set)
+        // Settings → General → You: the personal choices of "Make it yours", kept editable. Names follow the same character rule; the voice and check-ins live in files, not here.
+        if k == "assistantName" || k == "userCallName" {
+            let n = PersonalSetup.cleanName(v as? String ?? "")
+            guard Prefs.set(k, k == "assistantName" && n.isEmpty ? "Zuka" : n) else { push(); send("notice", ["text": "Couldn’t save that change, so the old setting is back."]); return }
+            push(); if k == "userCallName" { PersonalSetup.rerecordGreetings() }   // the greetings say the call name
+            return
+        }
+        if k == "voice" {
+            let pick = v as? String ?? ""
+            if PersonalSetup.voices.contains(pick) { PersonalSetup.preview(voice: pick, name: Prefs.assistantName, call: Prefs.callName); PersonalSetup.rerecordGreetings() }
+            push(); return
+        }
+        if k == "checkins" {
+            let text = (v as? String ?? "").trimmingCharacters(in: .whitespaces)
+            let times = text.isEmpty || text.lowercased() == "off" ? nil : PersonalSetup.parseTimes(text)
+            guard text.isEmpty || text.lowercased() == "off" || times != nil, Prefs.set("checkins", times == nil ? "" : text) else {
+                push(); send("notice", ["text": "Check-in times look like 10:00, 14:30, 18:30. Leave it empty to turn them off."]); return
+            }
+            PersonalSetup.applyCheckins(times); push(); return
+        }
         if k == "meetingSave", v as? Bool == false, Prefs.bool("meetingSave") {
             guard Prefs.set(k, false) else { push(); send("notice", ["text": "Couldn’t save that change, so the old setting is back."]); return }
             meeting.savingChanged(false); push()
@@ -7501,6 +7673,8 @@ Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in checkMic() }
 final class WakeListener {
     private var engine: AVAudioEngine?, request: SFSpeechAudioBufferRecognitionRequest?, task: SFSpeechRecognitionTask?
     private var started = Date.distantPast, woke = false, rest = "", settle: DispatchWorkItem?, timer: Timer?
+    private let levels = NSLock(); private var peak: Float = 0, buffers = 0   // what the mic actually delivers (another app can starve it)
+    private var lastSound = Date(), lastMeter = Date.distantPast, lastWords = Date(), loudSince: Date?
     func begin() { timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() } }
     private var wanted: Bool {
         Prefs.bool("wakeWord") && !Prefs.bool("paused") && !app.engine.isRunning && !app.busy && app.voice?.isRunning != true && app.greeter == nil
@@ -7529,6 +7703,18 @@ final class WakeListener {
     private func tick() {
         let why = whyNot()
         guard why.isEmpty else { note("waiting: " + why); if engine != nil { stop() }; return }
+        if engine != nil {
+            levels.lock(); let p = peak, n = buffers; peak = 0; buffers = 0; levels.unlock()
+            if n > 0 { lastSound = Date() }   // audio is arriving (a quiet room is fine)
+            if p > 0.06 { loudSince = loudSince ?? Date() } else { loudSince = nil }   // someone is talking
+            if let l = loudSince, Date().timeIntervalSince(l) > 5, Date().timeIntervalSince(lastWords) > 15, !woke {   // talking, but no words for 15 s: the recognizer stalled
+                note("recognizer stalled: restarting"); lastWords = Date(); loudSince = nil; stop(); start(); return
+            }
+            if Date().timeIntervalSince(lastMeter) > 30 { lastMeter = Date(); note(String(format: "mic: %d buffers/s, peak %.4f", n, p)) }
+            if Date().timeIntervalSince(lastSound) > 10 && !woke {   // no audio at all for 10 s: another app may hold the mic; reconnect
+                note("no audio from the mic: reconnecting"); lastSound = Date(); stop(); start(); return
+            }
+        }
         if engine == nil || (!woke && Date().timeIntervalSince(started) > 50) { stop(); start() }   // recognition tasks are capped near a minute
     }
     private var names: [String] { Array(Set([Prefs.assistantName.lowercased(), "zuka", "zooka", "zuca", "zukaa", "zucca"])).filter { $0.count >= 3 } }
@@ -7546,14 +7732,16 @@ final class WakeListener {
             input.installTap(onBus: 0, bufferSize: 2048, format: fmt) { buf, _ in
                 guard let src = buf.floatChannelData?[0], let one = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buf.frameLength), let dst = one.floatChannelData?[0] else { return }
                 one.frameLength = buf.frameLength; dst.update(from: src, count: Int(buf.frameLength)); req.append(one)
+                var m: Float = 0; for i in 0..<Int(buf.frameLength) { m = max(m, abs(src[i])) }
+                self.levels.lock(); self.peak = max(self.peak, m); self.buffers += 1; self.levels.unlock()
             }
             try e.start()
         } catch { note("mic failed: \(error.localizedDescription)"); input.removeTap(onBus: 0); try? input.setVoiceProcessingEnabled(false); return }
-        engine = e; request = req; started = Date(); woke = false; rest = ""; note("listening for the wake word")
+        engine = e; request = req; started = Date(); lastWords = Date(); lastSound = Date(); woke = false; rest = ""; note("listening for the wake word")
         task = r.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, self.request === req else { return }
-                if let text = result?.bestTranscription.formattedString { self.note("heard: " + String(text.suffix(60))); self.heard(text) }
+                if let text = result?.bestTranscription.formattedString { self.lastWords = Date(); self.note("heard: " + String(text.suffix(60))); self.heard(text) }
                 if let error { self.note("recognition stopped: \(error.localizedDescription)") }
                 if error != nil || result?.isFinal == true { if !self.woke { self.stop() } }   // the next tick starts a fresh one
             }
@@ -7568,8 +7756,10 @@ final class WakeListener {
             let undo = DispatchWorkItem { [weak self] in guard let self, !self.woke, self.opened else { return }; self.opened = false; app.close(clear: false) }
             early = undo; DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: undo)
         }
-        guard let hit = names.compactMap({ n in low.range(of: "\\b" + NSRegularExpression.escapedPattern(for: n) + "\\b", options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound }) else { return }
-        rest = String(text[hit.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces))
+        let hit = names.compactMap({ n in low.range(of: "\\b" + NSRegularExpression.escapedPattern(for: n) + "\\b", options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound })
+        if let hit { rest = String(text[hit.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces)) }
+        else if woke { rest = text.trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces)) }   // awake: after a pause the recognizer starts a new sentence without her name; it's still the request
+        else { return }
         if !woke {   // the moment she hears her name: the box opens listening and she answers, all at once
             woke = true; early?.cancel(); early = nil
             if !opened || !app.panel.isVisible { app.show(); app.js("listen") }; opened = true
@@ -7581,7 +7771,7 @@ final class WakeListener {
         if !rest.isEmpty { app.js("words", rest) }
         settle?.cancel()
         let go = DispatchWorkItem { [weak self] in self?.act() }; settle = go
-        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 6 : 0.45), execute: go)   // act 0.45 s after you stop; nothing said in 6 s: close
+        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 6 : 0.7), execute: go)   // act 0.7 s after you stop (natural mid-sentence pauses don't cut you off); nothing said in 6 s: close
     }
     private func act() {
         let said = rest; stop()
@@ -7603,7 +7793,7 @@ DispatchQueue.main.async { wake.begin() }
 let agentsUI = AgentPanels()
 let routineWake = RoutineWake()
 let onboarding = Onboarding()
-if !UserDefaults.standard.bool(forKey: "onboarded") { DispatchQueue.main.async { onboarding.open() } }
+if !UserDefaults.standard.bool(forKey: "onboarded") || Prefs.needsSetup { DispatchQueue.main.async { onboarding.open() } }   // a packaged app also until "Make it yours" is done
 else { Onboarding.plan { c in if c["ok"] as? Bool != true { onboarding.open(automatic: true) } } }   // set up once, but Claude signed out since
 var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
              EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]

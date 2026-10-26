@@ -352,6 +352,14 @@
   <section id="general" class="on">
     <h1>General</h1>
     <p class="lede">Your shortcut. Your way to talk.</p>
+    <h3>You</h3>
+    <div class="group" id="yougroup">
+      <div class="row"><div class="t"><b>Assistant’s name</b><span>Letters, numbers, spaces and hyphens.</span></div><input class="field" data-k="assistantName" maxlength="31" placeholder="Zuka" spellcheck="false" autocomplete="off" aria-label="Assistant’s name"></div>
+      <div class="row"><div class="t"><b>What it calls you</b></div><input class="field" data-k="userCallName" maxlength="31" placeholder="Your name" spellcheck="false" autocomplete="off" aria-label="What it calls you"></div>
+      <div class="row"><div class="t"><b>Voice</b><span>Plays a sample when you pick one.</span></div><select data-k="voice" aria-label="Voice"><option value="warm">Warm</option><option value="bright">Bright</option><option value="smooth">Smooth</option><option value="calm">Calm</option><option value="british">British</option><option value="indian">Indian</option><option value="jarvis">Jarvis</option><option value="deep">Deep</option><option value="friendly-male">Friendly male</option><option value="indian-male">Indian male</option></select></div>
+      <div class="row"><div class="t"><b>Wake word</b><span>Say its name, no keyboard. Mic on this Mac only.</span></div><label class="sw"><input type="checkbox" data-k="wakeWord" aria-label="Wake word"></label></div>
+      <div class="row"><div class="t"><b>Spoken check-ins</b><span>Times, Monday to Saturday, like 10:00, 14:30, 18:30. Empty is off.</span></div><input class="field" data-k="checkins" placeholder="Off" spellcheck="false" autocomplete="off" aria-label="Check-in times"></div>
+    </div>
     <h3>Shortcut</h3>
     <div class="shortcut" id="shortcut">
       <div class="caps" id="caps" aria-live="polite"></div>
@@ -665,6 +673,10 @@
   document.querySelectorAll('.info').forEach(i => { i.tabIndex = 0; i.setAttribute('role', 'img'); i.setAttribute('aria-label', i.title); });
 
   document.querySelector('[data-k="microphone"]').onchange = e => set('microphone', e.target.value);
+  document.querySelector('[data-k="voice"]').onchange = e => set('voice', e.target.value);
+  document.querySelectorAll('#yougroup input.field[data-k]').forEach(e => {   // You: names and check-in times, saved when you leave the field (Atticus.swift cleans them)
+    e.onchange = () => set(e.dataset.k, e.value.trim()); e.onkeydown = ev => { if (ev.key === 'Enter') e.blur(); };
+  });
   document.querySelectorAll('.seg[data-k]').forEach(g => g.querySelectorAll('button').forEach(b => b.onclick = () => set(g.dataset.k, b.dataset.v)));
   document.querySelectorAll('.sw input[data-k]').forEach(i => i.onchange = () => set(i.dataset.k, i.checked));
   document.querySelectorAll('input[type=range]').forEach(r => {
@@ -700,6 +712,7 @@
       const value = P[s.dataset.k];
       s.value = s.dataset.k === 'microphone' && ![...s.options].some(o => o.value === value) ? 'automatic' : value;
     });
+    document.querySelectorAll('#yougroup input.field[data-k]').forEach(e => { if (document.activeElement !== e) e.value = P[e.dataset.k] || ''; });
     document.querySelectorAll('input[type=range]').forEach(r => r.value = P[r.dataset.k]);
     $('volv').textContent = Math.round(P.volume / .6 * 100) + '%';
     $('routingwhy').textContent = WHY[P.routing] || '';

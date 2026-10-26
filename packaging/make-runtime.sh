@@ -33,6 +33,8 @@ mkdir -p "$OUT/voice"
 T=~/Projects/zuka-team/team
 cp "$T/voice/zuka_voice_light.py" "$T/voice/atticus_voice_server.py" "$T/voice/atticus-say" "$T/greetings/make-greetings.py" "$T/greetings/lines.json" "$OUT/voice/"
 chmod +x "$OUT/voice/atticus-say"
+# the spoken check-in (the setup's "Spoken check-ins" runs it from a LaunchAgent): this repo's copy reads the call name from settings and works with none
+cp "$HERE/packaging/zuka-checkin" "$OUT/voice/zuka-checkin"; chmod +x "$OUT/voice/zuka-checkin"
 
 # 4. check: the voice renders from here, offline, with nothing from this Mac's environment
 env -i HOME="$HOME" PATH=/usr/bin:/bin HF_HUB_OFFLINE=1 "$OUT/python/bin/python3" -I - "$OUT" <<'PY'

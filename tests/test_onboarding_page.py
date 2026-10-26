@@ -112,6 +112,30 @@ PERMISSION_ROWS = '''
 '''
 
 
+SETUP_FLOW = '''
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  while (!window.ob) await tick(10);
+  const $ = id => document.getElementById(id), seen = {};
+  seen.startsOnSetup = $('you').classList.contains('on') && !$('welcome').classList.contains('on'); seen.backHiddenOnSetup = $('back').hidden;
+  seen.saveDisabledAtFirst = $('y-save').disabled;
+  ob.setup({browsers: ['Google Chrome', 'Safari'], browser: 'Safari', checkins: '9:00, 15:00'});
+  seen.browser = [$('y-browser').value, [...$('y-browser').options].map(o => o.value)]; seen.times = $('y-times').value; seen.timesOffAtFirst = $('y-times').disabled;
+  $('y-name').value = 'No<va!'; $('y-name').dispatchEvent(new Event('input')); seen.cleanedName = $('y-name').value;
+  $('y-call').value = 'Sam@ Lee'; $('y-call').dispatchEvent(new Event('input')); seen.cleanedCall = $('y-call').value; seen.saveEnabled = !$('y-save').disabled;
+  seen.wakeHint = $('y-wake-hint').textContent;
+  [...document.querySelectorAll('.vplay')][4].click();   // the fifth voice: british
+  seen.voiceChecked = document.querySelector('.vsel[aria-checked="true"]').dataset.v;
+  $('y-check').querySelector('[data-v="on"]').click(); seen.timesOn = !$('y-times').disabled;
+  $('y-wake').checked = true; $('y-greet').checked = false; $('y-music').value = 'lofi beats';
+  $('y-save').click(); seen.saving = $('y-note').textContent;
+  ob.setupSaved({ok: false, error: 'Couldn’t save that. Try again.'}); seen.error = $('y-note').textContent; seen.canRetry = !$('y-save').disabled;
+  ob.setupSaved({ok: true, name: 'Nova', hotkey: '⌃⌥Space'}); seen.done = $('y-note').textContent;
+  await tick(2300);
+  seen.thenWelcome = $('welcome').classList.contains('on'); seen.meet = document.querySelector('#welcome h1').textContent; seen.noBackToSetup = $('back').hidden;
+  return JSON.stringify(seen);
+'''
+
+
 @unittest.skipUnless(sys.platform == 'darwin', 'macOS WebKit page check')
 class OnboardingPageTests(unittest.TestCase):
     @classmethod
@@ -170,6 +194,25 @@ class OnboardingPageTests(unittest.TestCase):
                             self.assertTrue(r['allow'], f'{where} button cannot be clicked')
                     grants = [p['id'] for p in out['posts'] if p.get('do') == 'grant']
                     self.assertEqual(grants, [] if granted else [r['allow'] for r in rows])
+
+    def test_first_run_setup_page_flow(self):
+        setup = Path(self.tmp.name) / 'setup.html'
+        setup.write_text(self.live.read_text().replace('<head>', '<head><script>window.__setup = true;</script>', 1))
+        out = self.run_page(setup, 640, 612, SETUP_FLOW)
+        seen = json.loads(out['result'])
+        self.assertTrue(seen['startsOnSetup']); self.assertTrue(seen['backHiddenOnSetup']); self.assertTrue(seen['saveDisabledAtFirst'])
+        self.assertEqual(seen['browser'], ['Safari', ['', 'Google Chrome', 'Safari']]); self.assertEqual(seen['times'], '9:00, 15:00'); self.assertTrue(seen['timesOffAtFirst'])
+        self.assertEqual((seen['cleanedName'], seen['cleanedCall']), ('Nova', 'Sam Lee')); self.assertTrue(seen['saveEnabled'])
+        self.assertIn('Say “Nova” to wake me', seen['wakeHint']); self.assertIn('Uses the mic on this Mac only.', seen['wakeHint'])
+        self.assertEqual(seen['voiceChecked'], 'british'); self.assertTrue(seen['timesOn'])
+        self.assertEqual(seen['error'], 'Couldn’t save that. Try again.'); self.assertTrue(seen['canRetry'])
+        self.assertEqual(seen['done'], 'Done — say “Nova” or press ⌃⌥Space')
+        self.assertTrue(seen['thenWelcome']); self.assertEqual(seen['meet'], 'Meet Nova'); self.assertTrue(seen['noBackToSetup'])
+        preview = next(p for p in out['posts'] if p.get('do') == 'setupPreview')
+        self.assertEqual(preview, {'do': 'setupPreview', 'voice': 'british', 'name': 'Nova', 'call': 'Sam Lee'})
+        saved = json.loads(next(p for p in out['posts'] if p.get('do') == 'setupSave')['data'])
+        self.assertEqual(saved, {'name': 'Nova', 'call': 'Sam Lee', 'voice': 'british', 'wake': True, 'greet': False,
+                                 'checkins': '9:00, 15:00', 'browser': 'Safari', 'music': 'lofi beats', 'keepOpen': 'Claude'})
 
 
 if __name__ == '__main__':

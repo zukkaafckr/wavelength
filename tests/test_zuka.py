@@ -117,7 +117,8 @@ class NativeTests(unittest.TestCase):
         self.assertIn('if self.askNeed.isEmpty { self.askAloud(p[0], p[1]) }', SWIFT)
         self.assertIn('let replying = drawingReply || !askFile.isEmpty', SWIFT)   # talking with a card up answers it
         self.assertIn("const ok = $('thread').querySelector('.ok:not(.gone):not(.offer)');", UI)
-        self.assertIn('if let then { then() } else { self.hide(after: 2) }', SWIFT)   # the mic opens after she finishes asking
+        self.assertIn('if let then { then() }', SWIFT)   # the mic opens after she finishes asking
+        self.assertIn('Prefs.bool("converse"), a.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")', SWIFT)   # and after any question she asks
 
     def test_go_ahead_covers_the_whole_task(self):
         src = (ROOT / 'atticus.py').read_text()

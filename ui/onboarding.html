@@ -2,28 +2,37 @@
 <html><head><meta charset="utf-8">
 <script>/*NAMES*/
 // The assistant's name and what it calls you come from Settings (Atticus.swift fills window.__names); these pages ship with the default wording.
+// window.__rename(name) does the same later, when first-run setup ("Make it yours") picks a name.
 (() => {
-  const N = window.__names || {}, name = N.assistant || 'Zuka', call = N.call || 'J';
-  window.ANAME = name; window.CNAME = call;
+  const N = window.__names || {}, call = N.call || '';
+  window.CNAME = call;
   document.documentElement.style.setProperty('--call', JSON.stringify(call));
-  if (name === 'Zuka') return;
   const ATTR = ['placeholder', 'title', 'aria-label', 'alt'], rx = /\bZuka\b/;
-  const fixText = t => { if (rx.test(t.data)) t.data = t.data.replace(/\bZuka\b/g, () => name); };
-  const fix = n => {
-    if (n.nodeType === 3) return n.parentNode && !/^(SCRIPT|STYLE)$/.test(n.parentNode.nodeName) && fixText(n);
-    if (n.nodeType !== 1 || /^(SCRIPT|STYLE)$/.test(n.nodeName)) return;
-    for (const a of ATTR) if (n.hasAttribute(a) && rx.test(n.getAttribute(a))) n.setAttribute(a, n.getAttribute(a).replace(/\bZuka\b/g, () => name));
-    for (const c of n.childNodes) fix(c);
+  let watching = false;
+  const rename = name => {
+    window.ANAME = name;
+    if (name === 'Zuka' || watching) return;
+    watching = true;
+    const fixText = t => { if (rx.test(t.data)) t.data = t.data.replace(/\bZuka\b/g, () => name); };
+    const fix = n => {
+      if (n.nodeType === 3) return n.parentNode && !/^(SCRIPT|STYLE)$/.test(n.parentNode.nodeName) && fixText(n);
+      if (n.nodeType !== 1 || /^(SCRIPT|STYLE)$/.test(n.nodeName)) return;
+      for (const a of ATTR) if (n.hasAttribute(a) && rx.test(n.getAttribute(a))) n.setAttribute(a, n.getAttribute(a).replace(/\bZuka\b/g, () => name));
+      for (const c of n.childNodes) fix(c);
+    };
+    const start = () => {
+      const watch = new MutationObserver(list => {
+        watch.disconnect();
+        for (const m of list) m.type === 'childList' ? m.addedNodes.forEach(fix) : fix(m.target);
+        watch.observe(document.body, opts);
+      }), opts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR };
+      fix(document.body); watch.observe(document.body, opts);
+      if (rx.test(document.title)) document.title = document.title.replace(/\bZuka\b/g, () => name);
+    };
+    document.body ? start() : document.addEventListener('DOMContentLoaded', start);
   };
-  document.addEventListener('DOMContentLoaded', () => {
-    const watch = new MutationObserver(list => {
-      watch.disconnect();
-      for (const m of list) m.type === 'childList' ? m.addedNodes.forEach(fix) : fix(m.target);
-      watch.observe(document.body, opts);
-    }), opts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR };
-    fix(document.body); watch.observe(document.body, opts);
-    if (rx.test(document.title)) document.title = document.title.replace(/\bZuka\b/g, () => name);
-  });
+  window.__rename = rename;
+  rename(N.assistant || 'Zuka');
 })();
 </script>
 <!-- Zuka first-run window. Atticus.swift loads this (orbs.js goes in place of the marker), calls ob.set({...}) every second
@@ -84,7 +93,7 @@
   .row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; opacity: 0; transform: translateY(8px);
     transition: opacity .45s var(--ease), transform .55s var(--out), background .4s; }
   .row + .row { box-shadow: inset 0 .5px 0 var(--line); }
-  #perms.on .row, #improve.on .row, #agents.on .row, #work.on .row { opacity: 1; transform: none; }
+  #perms.on .row, #you.on .row, #improve.on .row, #agents.on .row, #work.on .row { opacity: 1; transform: none; }
   .cap { width: 100%; max-width: 480px; margin: 18px 0 -14px; text-align: left; font: 600 11px system-ui; color: var(--fg3); }
   #agents .list + .cap { margin-top: 14px; } #agents .row { padding: 8px 14px; } #agents .list { margin-top: 20px; } #agents h2 + .sub { max-width: 430px; }
   .row.now { background: rgba(10,132,255,.08); } .row.now .allow { color: var(--fg3); background: transparent; pointer-events: none; }
@@ -368,6 +377,29 @@
   #dots i { width: 6px; height: 6px; border-radius: 3px; background: var(--fg3); opacity: .35; transition: width .45s var(--out), opacity .3s; }
   #dots i.on { width: 18px; opacity: .8; }
 
+
+  /* "Make it yours": first-run setup in a packaged app. Wavelength's rose accent, the same rounded cards. */
+  #you { --accent: #c4325f; justify-content: flex-start; padding-top: 44px; padding-bottom: 28px; }
+  #you.on .row { opacity: 1; transform: none; }
+  #you h2 { margin-bottom: 6px; }
+  #you .list { margin-top: 22px; } #you .cap { margin: 20px 0 -14px; }
+  #you .row { padding: 9px 14px; } #you .txt span { line-height: 1.35; }
+  #you .fld { width: 190px; flex: none; } #you .fld.wide { width: 100%; }
+  #you .fld:focus-visible, #you .btn:focus-visible, #you .sw input:focus-visible, #you .seg button:focus-visible, #you .vsel:focus-visible, #you .vplay:focus-visible { outline: 3px solid rgba(196,50,95,.45); outline-offset: 2px; }
+  #you .fld.bad { box-shadow: inset 0 0 0 1.5px #ff453a; }
+  #you .sw input:checked { background: var(--accent); }
+  #you .seg button.on { color: var(--accent); }
+  .vrow { display: flex; align-items: center; gap: 10px; padding: 6px 14px; }
+  .vrow + .vrow { box-shadow: inset 0 .5px 0 var(--line); }
+  .vsel { all: unset; flex: 1; display: flex; align-items: center; gap: 10px; min-height: 26px; cursor: pointer; font: 500 13px system-ui; color: var(--fg); }
+  .vsel .dot { flex: none; width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box; box-shadow: inset 0 0 0 1.5px var(--fg3); transition: box-shadow .2s var(--ease); }
+  .vsel[aria-checked="true"] .dot { box-shadow: inset 0 0 0 5px var(--accent); }
+  .vplay { all: unset; flex: none; width: 26px; height: 26px; border-radius: 13px; display: grid; place-items: center; font-size: 10px; cursor: pointer;
+    color: var(--accent); background: rgba(196,50,95,.14); transition: transform .12s var(--ease), background .2s; }
+  .vplay:hover { background: rgba(196,50,95,.24); } .vplay:active { transform: scale(.94); } .vplay.on { background: var(--accent); color: #fff; }
+  #y-times-row { align-items: center; } #y-times-row.dim { opacity: .45; }
+  #y-note { min-height: 18px; margin-top: 14px; font-size: 12.5px; color: var(--fg3); } #y-note.bad { color: #ff453a; } #y-note.ok { color: var(--accent); font-weight: 500; }
+  #you .bar2 { margin-top: 14px; } #you .alt { margin-top: 8px; }
   @keyframes drift { 50% { transform: translate(6px, -4px) scale(1.06); } }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pop { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -384,6 +416,38 @@
 </style></head>
 <body>
 <button class="btn quiet" id="back" hidden>Back</button>
+<section class="page" id="you">
+  <h2 class="r">Make it yours</h2>
+  <p class="sub r">Pick a name, a voice and a few habits. Change any of it later in Settings.</p>
+  <div class="cap r">Names</div>
+  <div class="list r">
+    <label class="row"><div class="txt"><b>What should your assistant be called?</b><span>Letters, numbers, spaces and hyphens.</span></div>
+      <input class="fld" id="y-name" value="Zuka" maxlength="31" autocomplete="off" spellcheck="false" aria-label="Assistant name"></label>
+    <label class="row"><div class="txt"><b>What should it call you?</b><span id="y-call-hint">Required.</span></div>
+      <input class="fld" id="y-call" maxlength="31" placeholder="Your name" autocomplete="off" spellcheck="false" aria-label="What it calls you" required></label>
+  </div>
+  <div class="cap r">Voice. Tap ▶ to hear it.</div>
+  <div class="list r" id="y-voices" role="radiogroup" aria-label="Voice"></div>
+  <div class="cap r">When it speaks</div>
+  <div class="list r">
+    <div class="row"><div class="txt"><b>Wake word</b><span id="y-wake-hint">Say “Zuka” to wake me, no keyboard. Uses the mic on this Mac only.</span></div><label class="sw"><input type="checkbox" id="y-wake" aria-label="Wake word"></label></div>
+    <div class="row"><div class="txt"><b>Greet me when I open it</b><span>A short hello before it listens.</span></div><label class="sw"><input type="checkbox" id="y-greet" checked aria-label="Greet me"></label></div>
+    <div class="row"><div class="txt"><b>Spoken check-ins</b><span>A friendly line at set times, Monday to Saturday.</span></div>
+      <div class="seg" id="y-check" role="group" aria-label="Spoken check-ins"><button data-v="off" class="on" aria-pressed="true">Off</button><button data-v="on" aria-pressed="false">On</button></div></div>
+    <div class="row dim" id="y-times-row"><div class="txt"><b>Times</b><span>Comma separated, like 10:00, 14:30, 18:30.</span></div>
+      <input class="fld" id="y-times" value="10:00, 14:30, 18:30" disabled autocomplete="off" spellcheck="false" aria-label="Check-in times"></div>
+  </div>
+  <div class="cap r">Your work setup. Optional.</div>
+  <div class="list r">
+    <label class="row"><div class="txt"><b>Browser</b><span>What “open Gmail” opens in.</span></div><select class="fld" id="y-browser" aria-label="Browser"><option value="">Mac default</option></select></label>
+    <label class="row"><div class="txt"><b>“Play a song” plays</b><span>YouTube search words.</span></div><input class="fld" id="y-music" placeholder="top hits mix" autocomplete="off" spellcheck="false" aria-label="What play a song plays"></label>
+    <label class="row"><div class="txt"><b>Keep these apps open at the end of the day</b><span>Comma separated. Everything else closes.</span></div><input class="fld" id="y-keep" value="Claude" autocomplete="off" spellcheck="false" aria-label="Apps to keep open"></label>
+  </div>
+  <button class="alt r" id="y-skipwork">Skip work setup</button>
+  <div id="y-note" class="r" role="status" aria-live="polite"></div>
+  <div class="bar2 r"><button class="btn" id="y-save" disabled>Save and Continue</button></div>
+</section>
+
 <section class="page" id="welcome">
   <div id="orbwrap" class="r"><canvas id="orb"></canvas></div>
   <h1 class="r">Meet Zuka</h1>
@@ -594,15 +658,15 @@
   </div>
 </div>
 
-<div id="dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+<div id="dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
 
 <script type="text/plain" id="orbsrc">/*ORBS*/</script>
 <script type="module">
   const $ = id => document.getElementById(id);
   const post = m => window.webkit?.messageHandlers.ob.postMessage(m);
-  const pages = ['welcome', 'perms', 'agents', 'try', 'mac', 'text', 'dictate', 'point', 'work', 'meeting', 'improve', 'tip', 'done'];
-  let cur = '', orbWake = null;
-  const skip = id => ['devin', 'pi'].includes(provider) && ['agents', 'work'].includes(id);   // their CLIs run no Zuka agents
+  const pages = ['you', 'welcome', 'perms', 'agents', 'try', 'mac', 'text', 'dictate', 'point', 'work', 'meeting', 'improve', 'tip', 'done'];
+  let cur = '', orbWake = null, setupNeeded = window.__setup === true;   // setupNeeded: first-run "Make it yours" still to do
+  const skip = id => (id === 'you' && !setupNeeded) || (['devin', 'pi'].includes(provider) && ['agents', 'work'].includes(id));   // their CLIs run no Zuka agents
   const go = id => {
     while (skip(id)) id = pages[pages.indexOf(id) + 1];
     if (recording) post({ do: 'cancelRecord' });
@@ -610,10 +674,12 @@
     cur = id; orbWake?.(); orbWake = null; $(id).classList.add('on');
     for (const page of pages) { $(page).inert = page !== id; $(page).setAttribute('aria-hidden', String(page !== id)); }
     [...$('dots').children].forEach((d, i) => { d.classList.toggle('on', pages[i] === id); d.hidden = skip(pages[i]); });
-    $('back').hidden = pages.indexOf(id) < 1;
+    let before = pages.indexOf(id) - 1; while (before >= 0 && skip(pages[before])) before--;
+    $('back').hidden = before < 0;
+    if (id === 'you') setTimeout(() => cur === 'you' && $('y-call').focus(), 650);
   };
   document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
-  $('back').onclick = () => { let i = pages.indexOf(cur) - 1; while (skip(pages[i])) i--; go(pages[i]); };
+  $('back').onclick = () => { let i = pages.indexOf(cur) - 1; while (i > 0 && skip(pages[i])) i--; go(pages[i]); };
   $('finish').onclick = () => post({ do: 'done' });
   $('kofi').onclick = () => post({ do: 'kofi' });
   $('feedback-link').onclick = () => post({ do: 'feedback' });   // Settings → Report feedback, over this window
@@ -984,7 +1050,71 @@
     else setTimeout(press, 1200);
   });
 
-  paintPrefs(); go('welcome');
+  // "Make it yours": the first-run setup of a packaged app. Atticus.swift sends ob.setup({browsers, browser, checkins, hotkey}),
+  // plays ▶ previews (setupPreview) and saves everything in one go (setupSave); it answers with ob.setupSaved.
+  const Y_VOICES = [['warm', 'Warm'], ['bright', 'Bright'], ['smooth', 'Smooth'], ['calm', 'Calm'], ['british', 'British'], ['indian', 'Indian'],
+    ['jarvis', 'Jarvis'], ['deep', 'Deep'], ['friendly-male', 'Friendly male'], ['indian-male', 'Indian male']];
+  let yVoice = 'warm', yCheck = false, yInit = false, yBusy = false, yPlay = null;
+  const yClean = v => v.replace(/[^\p{L}\p{N} \-]/gu, '').slice(0, 31);
+  const yNames = () => ({ name: yClean($('y-name').value).trim() || 'Zuka', call: yClean($('y-call').value).trim() });
+  const yPaint = () => {
+    const { name, call } = yNames();
+    $('y-wake-hint').textContent = `Say “${name}” to wake me, no keyboard. Uses the mic on this Mac only.`;
+    $('y-save').disabled = !call || yBusy;
+    $('y-check').querySelectorAll('button').forEach(b => { const on = (b.dataset.v === 'on') === yCheck; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+    $('y-times').disabled = !yCheck; $('y-times-row').classList.toggle('dim', !yCheck);
+    document.querySelectorAll('.vsel').forEach(b => b.setAttribute('aria-checked', String(b.dataset.v === yVoice)));
+  };
+  $('y-voices').replaceChildren(...Y_VOICES.map(([id, label]) => {
+    const row = Object.assign(document.createElement('div'), { className: 'vrow' });
+    const sel = Object.assign(document.createElement('button'), { className: 'vsel', type: 'button' });
+    sel.dataset.v = id; sel.setAttribute('role', 'radio'); sel.innerHTML = '<i class="dot"></i>'; sel.append(label);
+    sel.onclick = () => { yVoice = id; yPaint(); };
+    const play = Object.assign(document.createElement('button'), { className: 'vplay', type: 'button', textContent: '▶' });
+    play.setAttribute('aria-label', `Hear the ${label} voice`);
+    play.onclick = () => {
+      yVoice = id; yPaint();
+      const { name, call } = yNames();
+      document.querySelectorAll('.vplay.on').forEach(b => b.classList.remove('on')); play.classList.add('on');
+      clearTimeout(yPlay); yPlay = setTimeout(() => play.classList.remove('on'), 4000);
+      post({ do: 'setupPreview', voice: id, name, call });
+    };
+    row.append(sel, play); return row;
+  }));
+  for (const id of ['y-name', 'y-call']) {
+    $(id).addEventListener('input', () => { const v = yClean($(id).value); if (v !== $(id).value) $(id).value = v; $(id).classList.remove('bad'); yPaint(); });
+    $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); id === 'y-name' ? $('y-call').focus() : $('y-save').click(); } });
+  }
+  $('y-check').querySelectorAll('button').forEach(b => b.onclick = () => { yCheck = b.dataset.v === 'on'; yPaint(); if (yCheck) $('y-times').focus(); });
+  $('y-skipwork').onclick = () => { $('y-browser').value = ''; $('y-music').value = ''; $('y-keep').value = ''; $('y-note').textContent = 'Skipped: your Mac’s defaults stay.'; $('y-note').className = 'r'; };
+  $('y-save').onclick = () => {
+    const { name, call } = yNames();
+    if (!call) { $('y-call').classList.add('bad'); $('y-call').focus(); return; }
+    yBusy = true; yPaint(); $('y-note').className = 'r'; $('y-note').textContent = 'Saving…';
+    post({ do: 'setupSave', data: JSON.stringify({ name, call, voice: yVoice, wake: $('y-wake').checked, greet: $('y-greet').checked,
+      checkins: yCheck ? $('y-times').value.trim() : '', browser: $('y-browser').value, music: $('y-music').value.trim(), keepOpen: $('y-keep').value.trim() }) });
+  };
+  Object.assign(window.ob, {
+    setup(d) {   // once: what this Mac offers (installed browsers, the default one) and the starting times
+      if (yInit) return; yInit = true;
+      $('y-browser').replaceChildren(new Option('Mac default', ''), ...(d.browsers || []).map(b => new Option(b, b)));
+      $('y-browser').value = (d.browsers || []).includes(d.browser) ? d.browser : '';
+      if (d.checkins) $('y-times').value = d.checkins;
+      yPaint();
+    },
+    setupSaved(r) {
+      yBusy = false;
+      if (!r.ok) { $('y-note').className = 'r bad'; $('y-note').textContent = r.error || 'Couldn’t save that. Try again.'; yPaint(); return; }
+      setupNeeded = false; window.__rename(r.name || 'Zuka');
+      const key = r.hotkey || talkLabel;
+      $('y-note').className = 'r ok'; $('y-note').textContent = `Done — say “${r.name}” or press ${key}`;
+      $('y-save').disabled = true;
+      setTimeout(() => go('welcome'), 1800);
+    },
+  });
+  yPaint();
+
+  paintPrefs(); go(setupNeeded ? 'you' : 'welcome');
 
   // The same orb as the overlay, breathing.
   try {

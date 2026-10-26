@@ -428,9 +428,29 @@ def assistant_name():
     return _name_pref('assistantName', 'Zuka')
 
 
+def packaged_app():
+    """Running inside the packaged Wavelength.app (its bundled runtime sets this)."""
+    return bool(os.environ.get('WAVELENGTH_RUNTIME'))
+
+
 def call_name():
-    """What the assistant calls the user (Settings: userCallName)."""
+    """What the assistant calls the user (Settings: userCallName). The packaged app has no default name: until its first-run
+    setup is done (setupDone) it calls nobody anything, and replies read naturally without one (see call_clean)."""
+    if packaged_app():
+        name = _name_pref('userCallName', '')
+        return '' if name == 'J' and pref('setupDone', False) is not True else name
     return _name_pref('userCallName', 'J')
+
+
+def call_suffix():
+    """", Sam" for an inline address, or nothing when there is no call name."""
+    return f', {call_name()}' if call_name() else ''
+
+
+def call_clean(text):
+    """Drop the gap a missing call name leaves ("Done, ." -> "Done.", "Hi , how" -> "Hi, how"). No-op when there is a name."""
+    import zuka_commands
+    return zuka_commands.clean_call(text, call_name())
 
 
 def save_pref(key, value):
@@ -815,7 +835,7 @@ def gate():
         decision(False, f'Open web pages with {ME} --web read "<url>": it uses this task\'s own browser window, never the user\'s tabs.'); return
     agent_approved = False
     if re.match(r'mcp__.*(atria|higgsfield)', event.get('tool_name', ''), re.I) or event.get('tool_name', '').rsplit('__', 1)[-1] in CREDIT_TOOLS:
-        decision(False, f'{assistant_name()} never uses Atria or Higgsfield: they spend paid credits. Open it in your browser and generate by hand, {call_name()}.'); return
+        decision(False, f'{assistant_name()} never uses Atria or Higgsfield: they spend paid credits. Open it in your browser and generate by hand{call_suffix()}.'); return
     if event.get('tool_name', '').startswith('mcp__') and (pref('safe', True) or os.environ.get('ATTICUS_AGENT_PREP') == '1'):
         annotations = connector_annotations(event, os.environ.get('ATTICUS_ASK', ''))
         if annotations.get('readOnly', annotations.get('readOnlyHint')) is True and not annotations.get('destructive', annotations.get('destructiveHint', False)):
@@ -1510,7 +1530,7 @@ def small_talk(t):
         for rx, replies in SMALL_TALK:
             m = re.match(rf'(?:{rx})\b[\s,.!?]*(?:(?:and|so|also|ok|okay|well)\b\s*)?', rest)
             if m:
-                said = said or replies[int(time.time()) % len(replies)].format(call=call_name(), name=assistant_name()); rest = rest[m.end():].strip(); break
+                said = said or call_clean(replies[int(time.time()) % len(replies)].format(call=call_name(), name=assistant_name())); rest = rest[m.end():].strip(); break
         else:
             break
     if not said: return None
@@ -5231,7 +5251,7 @@ def agents_service():
 
 def system_prompt(risky):
     """The Atticus system prompt: the shared helpers and reply protocol, plus this client's risky-action rule."""
-    system = SYSTEM.replace('NEVER_RISKY', risky).replace('ASSISTANT_NAME', assistant_name()).replace('CALL_NAME', call_name())   # formatted once per start, so each user's prompt is stable
+    system = SYSTEM.replace('NEVER_RISKY', risky).replace('ASSISTANT_NAME', assistant_name()).replace('Call them CALL_NAME.', f'Call them {call_name()}.' if call_name() else "Don't use a name for them.").replace('CALL_NAME', call_name())   # formatted once per start, so each user's prompt is stable
     if pref('workIn', 'back') == 'front':
         system = system.replace('Work behind: never activate/raise unless asked to open/show/switch/focus.', 'Work in front: bring each app/page forward before working in it.').replace('pictures that window in place, even covered; raises only if asked.', 'to bring the working app forward.')
     if client() == 'claude' and not server():
@@ -7745,7 +7765,7 @@ def main():
         if warm: stop_claude(warm)
         end_turn('cancelled', emit=False)
         log_turn(task, 'Offline: skipped.', t, model='instant', path='instant', attempt_usd=[])
-        return say('!', f"I'm offline right now, {call_name()}. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
+        return say('!', f"I'm offline right now{call_suffix()}. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
     if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in installed settings; a fresh config (tests) never asks
         # Zuka: past the free instant commands every ask spends the Claude plan, so the user okays it first
         more = '' if routing_mode() == 'cheapest' else ' (more if it needs a bigger model)'

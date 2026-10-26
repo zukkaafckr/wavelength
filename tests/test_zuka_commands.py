@@ -128,6 +128,9 @@ class Base(unittest.TestCase):
             pp.start(); self.addCleanup(pp.stop)
         po = mock.patch.object(z, 'OFFER_FILE', str(Path(self.tmp.name) / 'offer.json'))
         po.start(); self.addCleanup(po.stop)
+        for name, f in (('PENDING', 'pending.json'), ('SHUTDOWN_FILE', 'shutdown.json')):   # each test starts with no half-given reminder or shutdown offer
+            pp = mock.patch.object(z, name, str(Path(self.tmp.name) / f))
+            pp.start(); self.addCleanup(pp.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -611,8 +614,9 @@ class EverydayBasics(Base):
             self.assertIn('set minutes of d to 20', o.call_args[0][0])
             self.assertIn('name:"buy two apples"', o.call_args[0][0])
             self.assertIn('5:30 pm', z.handle('remind me to stretch at five thirty pm'))
-            self.assertIsNone(z.handle('remind me'))
-            self.assertIsNone(z.handle('remind me to dance'))
+            self.assertIn('What should I remind you about', z.handle('remind me'))   # a missing part is asked for, never Claude
+            self.assertIn('Okay, no reminder', z.handle('never mind'))
+            self.assertIn('When should I remind you to dance', z.handle('remind me to dance'))   # no time given: she asks
         with mock.patch.object(z, '_now', return_value=now), mock.patch.object(z, '_osa', side_effect=RuntimeError('nope')):
             self.assertEqual(z.handle('remind me to call mom at 5 pm'),
                              "I couldn't add that to Reminders, J. Allow Zuka under Privacy & Security, Reminders.")

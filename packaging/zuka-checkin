@@ -1,0 +1,104 @@
+#!/usr/bin/python3 -I
+"""Check-ins: a friendly spoken line at set times of day, free (no Claude). The packaged Wavelength's copy.
+
+zuka-checkin [morning|afternoon|evening|auto]      (auto, the default: by the hour)
+Run by the com.wavelength.checkin LaunchAgent that first-run setup (or Settings) writes, at the times the person chose.
+Speaks in the assistant's voice when you are at the Mac (skipped when you have been away), and writes the line into
+the assistant's recent chat so a reply like "yes, show me" knows what it answers.
+The assistant's name and what it calls you come from ~/.config/atticus/settings.json (assistantName, userCallName);
+with no call name the lines simply drop it ("Evening! How did today go?").
+"""
+import json, os, random, re, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+HERE = os.path.dirname(os.path.realpath(__file__))
+SAY = os.path.join(HERE, "atticus-say")   # runtime/voice/atticus-say, next to this script
+RECENT = f"{HOME}/.config/atticus/recent.jsonl"
+SETTINGS = f"{HOME}/.config/atticus/settings.json"
+AWAY_SECS = 10 * 60   # no keyboard or mouse for this long: you are not at the Mac
+
+LINES = {
+    "morning": [
+        "Morning {user}! How are you feeling today, honestly? Say the word and I'll help plan the day.",
+        "Rise and shine, {user}! Coffee first or straight to work? I can help you pick what comes first.",
+        "Hey you! New day, fresh start. How's the mood? Want me to open what you need?",
+        "Good morning! Before you dive in, how are you doing? I can line up your day.",
+    ],
+    "afternoon": [
+        "Post-lunch check! How's the energy? Want me to help with what's still open?",
+        "Hey {user}, quick stretch break? You've been at it a while.",
+        "Afternoon slump or beast mode? Either way, I'm here if you need a hand.",
+    ],
+    "evening": [
+        "Long day, {user}? You did good. Want help wrapping up before you log off?",
+        "Hey, it's getting late. Wrap up for today? I can note what's pending for tomorrow.",
+        "Evening, {user}! How did today go? Anything I can take off your plate?",
+    ],
+}
+
+
+def part_for(hour):
+    return "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
+
+
+def line_for(part, user):
+    """A line of the part of the day, with the call name in it, or with the gap closed when there is none."""
+    line = random.choice(LINES[part]).replace("{user}", user)
+    if not user:
+        line = re.sub(r",\s*(?=[.?!])", "", line)
+        line = re.sub(r"[ \t]+(?=[,.?!])", "", line)
+        line = re.sub(r"[ \t]{2,}", " ", line)
+    return line
+
+
+def settings():
+    try:
+        with open(SETTINGS) as f: return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def idle_secs():
+    try:
+        out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=5).stdout
+        return int(re.search(r'"HIDIdleTime" = (\d+)', out)[1]) / 1e9
+    except Exception:
+        return 0
+
+
+def busy():
+    """The voice is playing right now (a greeting, an answer or another check-in)."""
+    try:
+        out = subprocess.run(["/usr/bin/pgrep", "-f", "afplay|atticus-say"], capture_output=True, text=True, timeout=3).stdout
+        return bool(out.strip())
+    except Exception:
+        return False
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else "auto"
+    part = arg if arg in LINES else part_for(time.localtime().tm_hour)
+    s = settings()
+    name = str(s.get("assistantName") or "Zuka")
+    user = re.sub(r"[^\w \-]", "", str(s.get("userCallName") or "")).strip()   # no call name: no name in the line
+    if s.get("paused") is True:
+        return
+    if idle_secs() > AWAY_SECS:
+        return   # away: no check-in, and nothing left in the chat to reply to
+    if busy():
+        return   # already talking: never talk over itself or you
+    line = line_for(part, user)
+    try:   # the assistant shows the last few turns to the model, so a reply to this lands in context
+        os.makedirs(os.path.dirname(RECENT), exist_ok=True)
+        with open(RECENT, "a") as f:
+            f.write(json.dumps({"t": time.time(), "q": f"({name} checked in)", "a": line}) + "\n")
+    except OSError:
+        pass
+    speak = [SAY, "--", line] if os.path.exists(SAY) else ["/usr/bin/say", "--", line]
+    for cmd, secs in ((["/usr/bin/osascript", "-e", 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run', name, line], 10), (speak, 180)):
+        try: subprocess.run(cmd, timeout=secs)
+        except (OSError, subprocess.TimeoutExpired): pass   # a slow voice once (the Mac under load) is no failure
+
+
+if __name__ == "__main__":
+    main()

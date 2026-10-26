@@ -74,7 +74,7 @@ for (const [label, keys] of Object.entries(want)) if (JSON.stringify(capsOf(labe
         self.assertEqual(swift.count('setupShown = true'), 1)
         self.assertIn('if line == "! setup" { onboarding.open(automatic: true); continue }', swift)
         self.assertIn('case "setup": onboarding.open()', swift)   # explicit setup stays available after dismissal
-        self.assertIn('if !UserDefaults.standard.bool(forKey: "onboarded") { DispatchQueue.main.async { onboarding.open() } }', swift)
+        self.assertIn('if !UserDefaults.standard.bool(forKey: "onboarded") || Prefs.needsSetup { DispatchQueue.main.async { onboarding.open() } }', swift)
         self.assertIn('else { Onboarding.plan { c in if c["ok"] as? Bool != true { onboarding.open(automatic: true) } } }', swift)
 
     def test_setup_opens_settings_for_invalid_configuration_before_signin(self):

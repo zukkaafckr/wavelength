@@ -52,7 +52,38 @@ def _setting(key, default):
 
 
 def NAME(): return _setting('assistantName', 'Zuka')   # what the assistant is called
-def CALL(): return _setting('userCallName', 'J')       # what it calls the user
+
+
+def _raw(key):
+    try:
+        path = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.join(os.path.expanduser('~'), '.config/atticus'), 'settings.json')
+        with open(path) as f: return json.load(f).get(key)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _packaged(): return bool(os.environ.get('WAVELENGTH_RUNTIME'))
+
+
+def CALL():
+    """What it calls the user. The packaged app has no default name: '' until its first-run setup is done (setupDone)."""
+    name = _setting('userCallName', '' if _packaged() else 'J')
+    if name == 'J' and _packaged() and _raw('setupDone') is not True: return ''
+    return name
+
+
+def clean_call(text, call=None):
+    """Replies are written as if there is a call name ("Done, {CALL()}."). With none, drop the gap it leaves:
+    "Done, ." -> "Done.", "Hey !" -> "Hey!", "Hi , how" -> "Hi, how". Untouched when there is a name."""
+    if not isinstance(text, str) or (CALL() if call is None else call): return text
+    text = re.sub(r',\s*(?=[.?!])', '', text)       # "Done, ."  "Hello, !"
+    text = re.sub(r'[ \t]+(?=[,.?!])', '', text)    # "Hey !"  "Hi , how"
+    return re.sub(r'[ \t]{2,}', ' ', text)
+
+
+def call_suffix():
+    """", Sam" to append to a sentence, or '' when there is no call name."""
+    return f', {CALL()}' if CALL() else ''
 
 
 NO_TASKS = "Task folders aren't set up for you yet, {call}. You can set them up in your setup."
@@ -1129,8 +1160,8 @@ def _timer(raw):
     if secs < 1 or secs > 86400:
         return f"I can set timers up to a day, {CALL()}."
     say = SAY if os.access(SAY, os.X_OK) else None
-    speak = f"{shlex.quote(SAY)} -- \"Time's up, {CALL()}.\"" if say else f"/usr/bin/say \"Time's up, {CALL()}.\""
-    note = f'display notification "Time\'s up, {CALL()}." with title "{NAME()} timer"'
+    speak = f"{shlex.quote(SAY)} -- \"Time's up{call_suffix()}.\"" if say else f"/usr/bin/say \"Time's up{call_suffix()}.\""
+    note = f'display notification "Time\'s up{call_suffix()}." with title "{NAME()} timer"'
     _spawn(['/bin/sh', '-c', f"sleep {secs}; /usr/bin/osascript -e {shlex.quote(note)}; {speak}"])
     return f"Timer set for {_human_dur(secs)}, {CALL()}."
 
@@ -1145,10 +1176,55 @@ def _as_str(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+PENDING = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'pending.json')   # a half-given reminder waiting for its missing part (90 s)
+_WHEN = r"(?:tomorrow|today|tonight|(?:tomorrow |today |tonight )?at \d{1,2}(?:[: ]?\d{2})? ?(?:am|pm|a m|p m)?(?: tomorrow| today| tonight)?|in (?:\d+|an?|half an?|a couple of) [a-z ]+?)"
+
+
+def _pending(new=None, clear=False):
+    try:
+        if clear or new is not None:
+            if new is None: os.remove(PENDING)
+            else:
+                os.makedirs(os.path.dirname(PENDING), exist_ok=True)
+                with open(PENDING, 'w') as f: json.dump({**new, 'at': time.time()}, f)
+            return None
+        with open(PENDING) as f: d = json.load(f)
+        return d if time.time() - d.get('at', 0) <= 90 else None
+    except (OSError, ValueError):
+        return None
+
+
+def _remind_words(low):
+    """How people say it -> "remind me to <task> <when>", or ('ask-task', when) / ('ask-when', task) when a part is missing."""
+    i = low.find('remind me')
+    if i < 0: return None
+    low = low[i:].strip()
+    low = re.sub(r"^remind me that ", 'remind me to ', low)   # "about X" stays "about X": "I'll remind you about the meeting"
+    m = re.match(r"^remind me (" + _WHEN + r")(?: (?:that|to|about|of) | )(.+)$", _words_to_digits(low))
+    if m and not re.match(r"^(?:at|in|tomorrow|today|tonight)\b", m.group(2)):   # "remind me tomorrow that I call Mom" -> task first, when last
+        low = f"remind me to {re.sub(r'^(?:i (?:have|need) to|to|that) ', '', m.group(2))} {m.group(1)}"
+    else:
+        low = _words_to_digits(low) if re.match(r"^remind me (?:" + _WHEN + r")$", _words_to_digits(low)) else low
+    if re.fullmatch(r"remind me(?: to)?", low): return ('ask-task', '')
+    m = re.fullmatch(r"remind me (" + _WHEN + r")", low)
+    if m: return ('ask-task', m.group(1))
+    if not re.search(r"\b(?:tomorrow|today|tonight)\b| at \d| in (?:\d|an? |half)", _words_to_digits(low)):
+        return ('ask-when', re.sub(r"^remind me (?:to )?", '', low).strip())
+    return low
+
+
 def _remind(raw):
     low = re.sub(r"\s+", ' ', raw.lower().replace('’', "'")).strip().rstrip('.!?')
-    if not low.startswith('remind me'):
+    low = _remind_words(low)
+    if low is None:
         return None
+    if isinstance(low, tuple):   # a part is missing: ask for it and keep the rest for the answer
+        kind, part = low
+        if kind == 'ask-task':
+            _pending({'kind': 'remind', 'when': part})
+            return f"Sure{call_suffix()}. What should I remind you about{(' ' + part) if part else ''}?"
+        _pending({'kind': 'remind', 'task': part})
+        return f"When should I remind you {part if part.startswith(('about ', 'of ')) else 'to ' + part}{call_suffix()}?"
     low = re.sub(r"\bremind me to\b", 'remind me to', low)
     now = _now()
     m = _REM_IN.match(_words_to_digits(low)) if re.search(r' in (?:\d|an? |half|[a-z]+ (?:min|hour|sec))', low) else None
@@ -1207,7 +1283,7 @@ def _remind(raw):
         _osa(script, 20)
     except Exception:
         return f"I couldn't add that to Reminders, {CALL()}. Allow {NAME()} under Privacy & Security, Reminders."
-    return f"Okay, I'll remind you to {task} {label}, {CALL()}."
+    return f"Okay, I'll remind you {task if task.startswith(('about ', 'of ')) else 'to ' + task} {label}, {CALL()}."
 
 
 # ---- screenshot, lock, folders
@@ -1325,7 +1401,7 @@ def _basics(t, raw):
         r = _timer(raw)
         if r:
             return r
-        if t.startswith('remind me'):
+        if 'remind me' in t:
             return _remind(raw)
         if _SHOT_AREA.match(t):
             return _screenshot(True)
@@ -1555,11 +1631,29 @@ def _inbox_phrase(t):
 
 # ---------------------------------------------------------------- entry
 def handle(t):
+    said = _handle(t)
+    if said is None:   # the wider set of free Mac commands (zuka_more.py), last, so the commands above win
+        try:
+            import zuka_more
+            said = zuka_more.handle(_norm(t), t if isinstance(t, str) else '')
+        except ImportError: pass
+        except Exception: said = FAIL.format(call=CALL()) if '{call}' in FAIL else None
+    return clean_call(said)
+
+
+def _handle(t):
     try:
         raw = t if isinstance(t, str) else ''
         t = _norm(t)
         if not t:
             return None
+        p = _pending()
+        if p and p.get('kind') == 'remind' and not t.startswith(('remind me', 'cancel', 'never mind', 'nevermind', 'stop')):
+            _pending(clear=True)   # the answer to "What should I remind you about?" / "When should I remind you?"
+            said = _remind(f"remind me to {raw.strip().rstrip('.!?')} {p['when']}" if 'when' in p else f"remind me to {p['task']} {raw.strip().rstrip('.!?')}")
+            if said: return said
+        elif p and t.startswith(('cancel', 'never mind', 'nevermind')):
+            _pending(clear=True); return f"Okay, no reminder{call_suffix()}."
         said = _end_of_day(t)
         if said:
             return said
