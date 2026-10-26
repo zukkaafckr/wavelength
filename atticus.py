@@ -3362,6 +3362,12 @@ def money(usd):
     return '<$0.001' if usd < 0.001 else f'${usd:.3f}' if usd < 0.1 else f'${usd:.2f}'
 
 
+def plan_size(usd):
+    """Zuka: how big a request was, in plan terms rather than dollars (Claude Code reports a $ figure even on a plan,
+    where nothing is charged; J read "$0.002" as spending credits). Buckets from Haiku-sized questions up."""
+    return 'a tiny' if usd < 0.003 else 'a small' if usd < 0.015 else 'a medium' if usd < 0.06 else 'a large'
+
+
 def usual_cost():
     """Zuka: the median cost of the last 30 Claude asks, so the usage card can say what to expect."""
     vals = []
@@ -7530,8 +7536,8 @@ def main():
         return say('!', "I'm offline right now, J. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
     if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in the team install's settings; a fresh config (tests) never asks
         # Zuka: past the free instant commands every ask spends the Claude plan, so the user okays it first
-        more = '' if routing_mode() == 'cheapest' else ', more if it needs a bigger model'
-        if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'Usually {"under $0.001" if usual_cost() < 0.001 else "about " + money(usual_cost())} of your plan{more}. Free commands never ask.'}, 60) != 'y':
+        more = '' if routing_mode() == 'cheapest' else ' (more if it needs a bigger model)'
+        if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'It uses {plan_size(usual_cost())} bit of your plan\'s session limit{more}. Free commands never ask.'}, 60) != 'y':
             if warm: stop_claude(warm)
             end_turn('cancelled', emit=False)
             log_turn(task, 'Skipped before using Claude.', t, model='instant', path='instant', attempt_usd=[])
@@ -7702,7 +7708,7 @@ def main():
         print('✎ ' + json.dumps(receipt, ensure_ascii=False), flush=True)
     if pref('usageCheck', False) and os.environ.get('ATTICUS_UI') == '1':   # Zuka: what this answer actually used, under it
         used = sum(x for x in attempt_usd or [] if isinstance(x, (int, float))) or (cost if isinstance(cost, (int, float)) else 0)
-        if used: print(f'$ {money(used)} used', flush=True)
+        if used: print(f'$ {plan_size(used)} use of your plan', flush=True)
     # "When I say focus mode, …" saved: a green Learned pill
     said = shortcut or learned_say   # a new shortcut, named or learned from these words
     tip(reply, f'Learned: Say “{said}” any time.' if said else 'Learned: Procedure saved for next time.' if workflow else taught[1].strip() if taught else '')

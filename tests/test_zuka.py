@@ -122,8 +122,10 @@ class NativeTests(unittest.TestCase):
     def test_usage_card_says_what_it_costs_and_answers_show_what_they_used(self):
         src = (ROOT / 'atticus.py').read_text()
         self.assertIn("'q': 'Answering this needs Claude.'", src)
-        self.assertIn('of your plan{more}. Free commands never ask.', src)
-        self.assertIn("print(f'$ {money(used)} used', flush=True)", src)
+        self.assertIn("bit of your plan\\'s session limit{more}. Free commands never ask.", src)
+        self.assertIn("print(f'$ {plan_size(used)} use of your plan', flush=True)", src)
+        self.assertNotIn('extra credits', src)   # never promise what only the account setting controls
+        self.assertEqual(atticus.plan_size(0.0015), 'a tiny'); self.assertEqual(atticus.plan_size(0.2), 'a large')
         self.assertEqual(atticus.money(0.0004), '<$0.001'); self.assertEqual(atticus.money(0.0153), '$0.015')
         self.assertIn("usage ? '<b></b><p class=\"cost\"></p><div><button>Skip</button><button class=\"go\">Go ahead</button></div>'", UI)
         self.assertIn("} else if (tag === '$' && turn()) {", UI)
