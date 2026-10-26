@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -133,8 +134,8 @@ class Exports(Base):
 
 class Titles(Base):
     def test_real_like(self):
-        info = z._parse_titles(['Hydroh Bottle | Atria', 'Inbox (1,650) - ps607457@gmail.com - Gmail', '(58) WhatsApp'])
-        self.assertEqual(info, {'whatsapp': 58, 'gmail': [('ps607457', 1650)]})
+        info = z._parse_titles(['Hydroh Bottle | Atria', 'Inbox (1,650) - alex.k@gmail.com - Gmail', '(58) WhatsApp'])
+        self.assertEqual(info, {'whatsapp': 58, 'gmail': [('alex.k', 1650)]})
         self.assertEqual(z._unread_reply(info), '58 unread on WhatsApp, and 1,650 unread in your Gmail.')
 
     def test_multi_gmail(self):
@@ -242,3 +243,35 @@ class NeverRaises(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class VoicePickTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.d = tempfile.mkdtemp()
+        self.p = [mock.patch.object(z, 'VOICE_PICK', os.path.join(self.d, 'voice.json')), mock.patch.object(z, 'ZUKA_DIR', self.d)]
+        for x in self.p: x.start()
+
+    def tearDown(self):
+        for x in self.p: x.stop()
+
+    def test_list_names_every_voice_and_the_current_one(self):
+        said = z.handle('voice options')
+        for name in z.VOICES.values(): self.assertIn(name, said)
+        self.assertIn("warm (that's me now)", said)
+
+    def test_try_saves_the_pick_and_keep_confirms(self):
+        self.assertIn('British voice', z.handle('try the british voice'))
+        with open(z.VOICE_PICK) as f: self.assertEqual(json.load(f)['pick'], 'british')
+        self.assertIn("That's my voice now", z.handle('keep it'))
+        self.assertIn('Jarvis', z.handle('use jarvis voice'))
+        self.assertIsNone(z.handle('try photoshop'))   # not a voice: the normal path
+
+    def test_greetings_are_kept_and_restored_for_her_own_voice(self):
+        g = os.path.join(self.d, 'greetings'); os.makedirs(g)
+        Path(g, 'ack-1.wav').write_text('original')
+        z.handle('try the deep voice')            # no recorder here: greetings untouched, original kept once
+        self.assertTrue(os.path.exists(os.path.join(self.d, 'greetings-original', 'ack-1.wav')))
+        Path(g, 'ack-1.wav').write_text('re-recorded')
+        z.handle('go back to your original voice')
+        self.assertEqual(Path(g, 'ack-1.wav').read_text(), 'original')

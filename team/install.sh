@@ -1,22 +1,26 @@
 #!/bin/bash
 # Team install. Run AFTER team/personalize.py:
-#   bash team/install.sh [--voice] [--expressive] [--ram-gb N] [--no-open]
+#   bash team/install.sh [--voice] [--pick VOICE] [--expressive] [--ram-gb N] [--no-open]
 #   --voice       the natural voice, light and fast (about 350 MB download, works on any Mac, offline once set up)
 #   --expressive  also record the greetings in the extra-expressive voice (+4 GB download; best on 16 GB Macs).
 #                 Live replies always use the light voice. Implies --voice.
+#   --pick VOICE  which voice: warm (default), bright, smooth, calm, british, indian, jarvis, deep, friendly-male, indian-male.
+#                 Change it any time by saying "voice options" or "try the british voice".
 #   --ram-gb N    accepted and ignored (older instructions used it)
 #   DRY_RUN=1     print what would happen, change nothing
 # Never uses sudo. Everything lands in your home folder.
 set -e
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TEAM="$REPO/team"
-VOICE=0; EXPR=0; RAM=""; OPEN=1; DRY="${DRY_RUN:-}"
+VOICE=0; EXPR=0; RAM=""; OPEN=1; PICK=""; DRY="${DRY_RUN:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --voice) VOICE=1 ;;
     --expressive) VOICE=1; EXPR=1 ;;
     --ram-gb) shift; RAM="${1:-}" ;;
     --no-open) OPEN=0 ;;
+    --pick) shift; PICK="${1:-}"; VOICE=1
+      case "$PICK" in warm|bright|smooth|calm|british|indian|jarvis|deep|friendly-male|indian-male) ;; *) echo "--pick: one of warm, bright, smooth, calm, british, indian, jarvis, deep, friendly-male, indian-male"; exit 2 ;; esac ;;
     *) echo "Unknown option: $1"; exit 2 ;;
   esac; shift
 done
@@ -60,6 +64,7 @@ with open(p, "w") as f: json.dump(s, f, indent=2)
 os.chmod(p, 0o600)
 PY
 note "Wrote settings: ask before using your Claude plan, no telemetry, no background updates, press-to-talk, cheapest routing, speak and greet on"
+if [ -n "$PICK" ]; then [ -n "$DRY" ] || printf '{"pick": "%s"}\n' "$PICK" > "$HOME/.config/atticus/voice.json"; note "Voice: $PICK (say \"voice options\" any time to hear the others)"; fi
 fi
 
 # 3. voice
@@ -158,6 +163,24 @@ echo "</array>"; echo "</dict></plist>"
 launchctl bootout "gui/$UID_N/com.zuka.checkin" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_N" "$LA/com.zuka.checkin.plist"
 note "Installed the check-ins (Mon-Sat at 10:00, 14:30 and 18:30, only when you are at the Mac)"
+
+# 5. the voice they picked, the greeting recorder (for voice changes later) and team updates
+mkdir -p "$HOME/.local/share/zuka/greetings-maker"; cp "$TEAM/greetings/make-greetings.py" "$TEAM/greetings/lines.json" "$HOME/.local/share/zuka/greetings-maker/"
+command -v gh >/dev/null && gh auth setup-git >/dev/null 2>&1 || true   # lets the updater read the private repo with their GitHub sign-in
+cat > "$LA/com.wavelength.update.plist" <<P
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.wavelength.update</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>$TEAM/update.sh</string><string>--auto</string></array>
+<key>StartInterval</key><integer>3600</integer>
+<key>RunAtLoad</key><true/>
+<key>StandardErrorPath</key><string>$HOME/.config/atticus/update.log</string>
+</dict></plist>
+P
+launchctl bootout "gui/$UID_N/com.wavelength.update" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_N" "$LA/com.wavelength.update.plist"
+note "Team updates: checked every hour and installed while you're away from the Mac (tested first; your names and voice stay)"
 
 echo; echo "All done. What I did:"; for d in "${DONE[@]}"; do echo "  - $d"; done
 if [ "$OPEN" = 1 ]; then open "$HOME/Applications/Atticus.app"; echo "Opened $NAME. Its setup window walks you through the permissions."; fi

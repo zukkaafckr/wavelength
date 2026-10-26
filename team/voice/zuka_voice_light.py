@@ -15,6 +15,22 @@ CACHE, CACHE_MAX = os.path.join(HERE, "cache-light"), 400
 MOODS = {   # Heart+Bella blend weight and pace: upbeat for good news, warm for normal lines, steady for problems
     "excited": (0.70, 1.12), "friendly": (0.80, 1.06), "calm": (0.90, 0.98),
 }
+# The voice each person picks ("voice options" / "try the british voice"), saved in ~/.config/atticus/voice.json.
+# id: (spoken name, main voice, blend voice or None). A blend shifts with the mood; a single voice only changes pace.
+PRESETS = {
+    "warm": ("warm", "af_heart", "af_bella"), "bright": ("bright", "af_bella", None), "smooth": ("smooth", "af_nova", None),
+    "calm": ("calm", "af_sarah", None), "british": ("British", "bf_emma", None), "indian": ("Indian", "hf_alpha", None),
+    "jarvis": ("Jarvis", "bm_george", None), "deep": ("deep male", "am_onyx", None), "friendly-male": ("friendly male", "am_michael", None),
+    "indian-male": ("Indian male", "hm_omega", None),
+}
+PICK = os.path.expanduser("~/.config/atticus/voice.json")
+
+
+def picked():
+    try:
+        with open(PICK) as f: p = json.load(f).get("pick")
+        return p if p in PRESETS else "warm"
+    except (OSError, ValueError): return "warm"
 
 
 def main():
@@ -26,17 +42,24 @@ def main():
     from kokoro_onnx import Kokoro
     t = time.time()
     k = Kokoro(f"{KOKORO}/kokoro-v1.0.int8.onnx", f"{KOKORO}/voices-v1.0.bin")
-    heart, bella = k.get_voice_style("af_heart"), k.get_voice_style("af_bella")
-    styles = {m: (heart * w + bella * (1 - w), speed) for m, (w, speed) in MOODS.items()}
-    k.create("Ready.", voice=styles["friendly"][0], speed=1.0, lang="en-us")   # warm-up: the first real line is fast too
+    loaded = {}
+    def styles_for(pick):
+        if pick not in loaded:
+            _, a, b = PRESETS[pick]
+            va, vb = k.get_voice_style(a), k.get_voice_style(b) if b else None
+            loaded[pick] = {m: (va * w + vb * (1 - w) if b else va, speed) for m, (w, speed) in MOODS.items()}
+        return loaded[pick]
+    k.create("Ready.", voice=styles_for(picked())["friendly"][0], speed=1.0, lang="en-us")   # warm-up: the first real line is fast too
     log(f"light voice loaded in {time.time() - t:.1f}s")
 
     def clip_for(s, e):
         os.makedirs(CACHE, exist_ok=True)
-        path = os.path.join(CACHE, hashlib.sha1(f"light|{e}|{' '.join(s.split()).lower()}".encode()).hexdigest()[:20] + ".wav")
+        pick = picked()
+        key = f"light|{e}|{' '.join(s.split()).lower()}" if pick == "warm" else f"light|{pick}|{e}|{' '.join(s.split()).lower()}"   # warm keeps its existing memory
+        path = os.path.join(CACHE, hashlib.sha1(key.encode()).hexdigest()[:20] + ".wav")
         if os.path.exists(path):
             os.utime(path); return path, True
-        style, speed = styles[e]
+        style, speed = styles_for(pick)[e]
         audio, sr = k.create(s, voice=style, speed=speed, lang="en-us")
         sf.write(path + ".part.wav", audio, sr); os.replace(path + ".part.wav", path)
         old = sorted((os.path.join(CACHE, f) for f in os.listdir(CACHE) if f.endswith(".wav") and not f.endswith(".part.wav")), key=os.path.getmtime)

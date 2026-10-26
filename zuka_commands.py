@@ -6,6 +6,7 @@ when the phrase is not one of these commands. Never raises.
 import json
 import os
 import re
+import shutil
 import time
 import subprocess
 from datetime import datetime, timedelta
@@ -341,6 +342,53 @@ def _site(key):
     return f"{label} shows {_num(n)} new, J." + (" That's messages and notifications together. Want me to read who they're from?" if key == 'linkedin' else '')
 
 
+# ---- her voice: "voice options", "try the british voice", "keep it"
+VOICE_PICK = os.path.expanduser('~/.config/atticus/voice.json')
+ZUKA_DIR = os.path.expanduser('~/.local/share/zuka')
+VOICES = {'warm': 'warm', 'bright': 'bright', 'smooth': 'smooth', 'calm': 'calm', 'british': 'British', 'indian': 'Indian',
+          'jarvis': 'Jarvis', 'deep': 'deep male', 'friendly-male': 'friendly male', 'indian-male': 'Indian male'}
+_ALIASES = {'warm': 'warm', 'default': 'warm', 'original': 'warm', 'normal': 'warm', 'usual': 'warm', 'old': 'warm', 'your old': 'warm',
+            'bright': 'bright', 'fun': 'bright', 'excited': 'bright', 'smooth': 'smooth', 'calm': 'calm', 'soft': 'calm',
+            'british': 'british', 'english': 'british', 'uk': 'british', 'indian': 'indian', 'desi': 'indian', 'indian female': 'indian',
+            'jarvis': 'jarvis', 'butler': 'jarvis', 'british male': 'jarvis', 'deep': 'deep', 'deep male': 'deep', 'male deep': 'deep',
+            'male': 'friendly-male', 'friendly male': 'friendly-male', 'guy': 'friendly-male', 'boy': 'friendly-male',
+            'indian male': 'indian-male', 'desi male': 'indian-male'}
+_VOICE_LIST = re.compile(r"^(voice options|(what|which) (other )?voices( (do you have|can you do|are there|you got))?|"
+                         r"(list|show)( me)? (your |the )?voices|change (your|the) voice|other voices|your voices)$")
+_VOICE_SET = re.compile(r"^(?:try|use|switch to|go back to|change (?:your |the )?voice to|set (?:your |the )?voice to|sound like|speak in|talk in)"
+                        r" (?:the |a |an |your )?(.+?)(?: voice| accent| one)?$")
+_KEEP = re.compile(r"^(keep (it|this|that|this voice|that voice|this one|that one)|i like (it|this|this one|that one)|perfect keep it|yes keep it)$")
+
+
+def _pick():
+    try:
+        with open(VOICE_PICK) as f: return json.load(f)
+    except (OSError, ValueError): return {}
+
+
+def _set_voice(key):
+    old = _pick().get('pick', 'warm')
+    os.makedirs(os.path.dirname(VOICE_PICK), exist_ok=True)
+    with open(VOICE_PICK, 'w') as f: json.dump({'pick': key, 'at': time.time()}, f)
+    greet, keep = os.path.join(ZUKA_DIR, 'greetings'), os.path.join(ZUKA_DIR, 'greetings-original')
+    maker = os.path.join(ZUKA_DIR, 'greetings-maker', 'make-greetings.py')
+    if key != old and os.path.isdir(greet):
+        if not os.path.isdir(keep): shutil.copytree(greet, keep)   # the greetings she was set up with, kept once
+        if key == 'warm':   # back to her own voice: her original greetings, not a re-recording
+            shutil.rmtree(greet); shutil.copytree(keep, greet)
+        elif os.path.exists(maker):   # re-record the greetings in the new voice once the sample has played
+            subprocess.Popen(['/bin/sh', '-c', f'sleep 15; exec /usr/bin/python3 -I "{maker}"'], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    label = VOICES[key]
+    return f"Okay, this is my {label} voice. Hi J, how do I sound? Say keep it, or try another one."
+
+
+def _voice_list():
+    now = _pick().get('pick', 'warm')
+    names = [v + (" (that's me now)" if k == now else '') for k, v in VOICES.items()]
+    return "I can sound " + ', '.join(names[:-1]) + ', or ' + names[-1] + ". Say try, and the name."
+
+
 # ---- calendar
 def _dt(s):
     d = datetime.fromisoformat(str(s).replace('Z', '+00:00'))
@@ -428,6 +476,13 @@ def handle(t):
             return _open_tool(m.group(3))
         if _UNREAD.match(t):
             return _unread()
+        if _VOICE_LIST.match(t):
+            return _voice_list()
+        m = _VOICE_SET.match(t)
+        if m and m.group(1) in _ALIASES:
+            return _set_voice(_ALIASES[m.group(1)])
+        if _KEEP.match(t) and time.time() - _pick().get('at', 0) < 600:
+            return "Done, J. That's my voice now."
         m = _SITE.match(t)
         if m and t != m.group(1):   # a bare site name is not a check
             return _site(m.group(1))

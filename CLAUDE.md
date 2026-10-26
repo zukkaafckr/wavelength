@@ -46,7 +46,11 @@ The app's own setup window guides this. Stay with them and explain each ask in o
 
 ## Updating later
 
-Never update on your own. If asked: `git fetch upstream-atticus` shows what the original Atticus changed; merge only if they want it, then rebuild with `./build.sh`. Their assistant name lives in the files, so work from the same copy.
+Updates come from the team repo on their own: an hourly check (`com.wavelength.update`, installed by `team/install.sh`) runs `team/update.sh --auto`. It only installs while nobody has touched the Mac for 10 minutes, tests the new version on a copy first, keeps the assistant's name, call-name and voice, and rebuilds. To update right now: `bash team/update.sh`. It needs the GitHub sign-in to work in the background: `gh auth login`, then `gh auth setup-git`. Never merge from the original Atticus or anywhere else: fixes come from the team repo only.
+
+## Voice
+
+Ask which voice they want and pass it to the installer with `--pick`: warm (default, lively female), bright, smooth, calm, british, indian, jarvis (British male), deep (male), friendly-male, indian-male. They can change it any time by saying "voice options" or "try the jarvis voice", and say "keep it" when they like one. Their greetings are re-recorded in the new voice on their own.
 
 ## Never
 
