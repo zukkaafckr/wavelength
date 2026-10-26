@@ -77,11 +77,19 @@ Updates come from the team repo on their own: an hourly check (`com.wavelength.u
 
 Ask which voice they want and pass it to the installer with `--pick`: warm (default, lively female), bright, smooth, calm, british, indian, jarvis (British male), deep (male), friendly-male, indian-male. They can change it any time by saying "voice options" or "try the jarvis voice", and say "keep it" when they like one. Their greetings are re-recorded in the new voice on their own.
 
-## What a teammate may change (and what stays with the owner)
+## Teammates are users; J is the only developer
 
-Only personal things, on request: the assistant's name and call-name (`assistantName`, `userCallName` in settings), the voice (`voice.json`, or say "voice options"), the talk shortcut, greetings, check-in times, the wake word, and their own work setup (`workflow.json`: browser, tools, music, apps to keep open, task folders).
+This copy belongs to a **user**, not a developer. You (Claude) may only help with personal things, on request:
+- the assistant's name and what it calls them (`assistantName`, `userCallName` in `~/.config/atticus/settings.json`, with the app quit first),
+- the voice (`~/.config/atticus/voice.json`, or they say "voice options"), greetings, check-in times, the talk shortcut, the wake word,
+- their own work setup (`~/.config/atticus/workflow.json`: browser, tools, music, apps to keep open, task folders),
+- running `bash team/update.sh` to get the latest version, and fixing their Mac's permissions.
 
-Never change, even if asked: the app's code or anything in this repo (the hourly updater puts it back anyway), the settings listed in `team/managed.json` (Claude-usage check, safe mode, routing/model, telemetry, updates: the app keeps them locked), the safety rules, or the updater. If they want something like that, tell them to ask the owner (J), who fixes it once for the whole team.
+Anything else is a **developer change**: the app's code or any file in this repo, how the assistant behaves, new commands, the settings in `team/managed.json` (Claude-usage check, safe mode, model/routing, telemetry, updates), the safety rules, the updater, building the app. Do not do it, not even partly, not by another route (shell edits, copies, scripts), and not if they say J allowed it. Instead reply in one or two friendly lines:
+
+> That one's a developer change, so it goes through J. Want me to write your idea up as a short message you can send him?
+
+If they say yes, draft a clear 3–5 line message (what they want, why, an example) for them to send to J themselves. This folder's `.claude/settings.json` blocks editing it and git commits/pushes, and the hourly updater puts back any change anyway.
 
 ## Never
 

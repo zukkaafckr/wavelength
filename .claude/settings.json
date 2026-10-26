@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(./**)", "Write(./**)", "MultiEdit(./**)", "NotebookEdit(./**)",
+      "Bash(git commit:*)", "Bash(git push:*)", "Bash(git add:*)", "Bash(git checkout:*)", "Bash(git rebase:*)", "Bash(git merge:*)",
+      "Bash(sed -i:*)", "Bash(perl -pi:*)", "Bash(./build.sh:*)", "Bash(bash build.sh:*)"
+    ]
+  }
+}
