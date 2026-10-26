@@ -273,7 +273,7 @@ class UniversalTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ['open', '-a', 'Fixture'])
             run.reset_mock()
             for ask in ('open homework', 'open unfamiliar', 'Can you open up Unfamiliar?', 'Um, search Unfamiliar for e-bikes and find me the cheapest one.',
-                        'What am I looking at?', 'open downloads', 'open it', 'Can you open up?', 'open my unfamiliar homework', 'open unfamiliar and play music'):
+                        'What am I looking at?', 'open it', 'Can you open up?', 'open my unfamiliar homework', 'open unfamiliar and play music'):
                 self.assertIsNone(atticus.fast(ask), ask)   # one bare word may be his file or tab, not <word>.com: the AI finds it
         run.assert_not_called(); show.assert_not_called()
 

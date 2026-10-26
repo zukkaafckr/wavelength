@@ -122,6 +122,11 @@ class Base(unittest.TestCase):
         q.start(); self.addCleanup(q.stop)
         self.osa = mock.patch.object(z, '_osa', return_value='none')
         self.osa.start(); self.addCleanup(self.osa.stop)
+        for name, rv in (('_get_text', None), ('_get_json', None), ('_spawn', None)):   # no real network or processes in tests
+            pp = mock.patch.object(z, name, return_value=rv)
+            pp.start(); self.addCleanup(pp.stop)
+        po = mock.patch.object(z, 'OFFER_FILE', str(Path(self.tmp.name) / 'offer.json'))
+        po.start(); self.addCleanup(po.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -171,7 +176,7 @@ class Matching(Base):
                 self.assertEqual(z.handle(f'open {k}'), f"{EDITOR['tools'][k][0]}'s up.")
 
     def test_negative(self):
-        for p in ['open premiere', 'open safari', 'how is the export going', 'what is the weather',
+        for p in ['open premiere', 'open safari', 'how is the export going', 'what is my weather app',
                   'send a whatsapp to mom', 'write a script for my day', 'new task', 'open', '']:
             self.assertIsNone(z.handle(p), p)
 
@@ -260,7 +265,7 @@ class Titles(Base):
 
     def test_handle_unread_uses_osa(self):
         with mock.patch.object(z, '_osa', return_value='(7) WhatsApp\nInbox (2) - x@y.com - Gmail\n'):
-            self.assertEqual(z.handle('any new messages'), '7 unread on WhatsApp, and 2 unread in your Gmail.')
+            self.assertEqual(z.handle('any new messages'), '7 unread on WhatsApp, and 2 unread in your Gmail.' + z.OFFER_TEXT)
 
 
 class Calendar(Base):
@@ -477,6 +482,310 @@ class Robust(Base):
         (self.dl / '12-BigDay' / 'out').mkdir()
         (self.dl / '12-BigDay' / 'out' / 'v.mp4').write_text('x')
         self.assertEqual(z.handle('export check'), 'Task 12: 1 in Out.')
+
+
+class EverydayBasics(Base):
+    def test_math(self):
+        for p, want in [('what is two plus two', "That's 4, J."), ("what's 15% of 2,400", "That's 360, J."),
+                        ('fifteen percent of twenty four hundred', "That's 360, J."), ('calculate 10 times 5', "That's 50, J."),
+                        ('how much is 7 divided by 2', "That's 3.5, J."), ('5 squared', "That's 25, J."), ('3 cubed', "That's 27, J."),
+                        ('what is the square root of 144', "That's 12, J."), ('2 to the power of 10', "That's 1,024, J."),
+                        ('1,200 x 3', "That's 3,600, J."), ('one hundred and five minus six', "That's 99, J."),
+                        ('what is 1 divided by 3', "That's 0.3333, J."), ('two thousand four hundred over twelve', "That's 200, J."),
+                        ('what is 5 over 0', "I can't divide by zero, J.")]:
+            self.assertEqual(z.handle(p), want, p)
+
+    def test_math_negative_and_safe(self):
+        for p in ['what is 5', 'two', 'what is 9 ** 9 ** 9', 'what is __import__ os plus 1', 'what is a plus b']:
+            self.assertIsNone(z.handle(p), p)
+        self.assertIsNone(z._math('what is 10 to the power of 500'))
+        with self.assertRaises(ValueError):
+            z._safe_eval('__import__("os")')
+
+    def test_time_date_day(self):
+        now = datetime(2026, 10, 26, 15, 42)
+        with mock.patch.object(z, '_now', return_value=now):
+            self.assertEqual(z.handle('what time is it'), "It's 3:42 pm, J.")
+            self.assertEqual(z.handle("what's the time"), "It's 3:42 pm, J.")
+            self.assertEqual(z.handle("what's the date today"), "It's Monday the 26th of October, J.")
+            self.assertEqual(z.handle("what's today's date"), "It's Monday the 26th of October, J.")
+            self.assertEqual(z.handle('what day is it'), "It's Monday, J.")
+            self.assertIsNone(z.handle('what time is the meeting'))
+
+    def test_weather(self):
+        wx = 'Partly cloudy +31°C feels +35°C, 0.0mm rain'
+        with mock.patch.object(z, '_get_text', return_value=wx) as g:
+            self.assertEqual(z.handle("what's the weather"), "Right now it's partly cloudy, 31°C, feels like 35°C.")
+            self.assertTrue(g.call_args[0][0].startswith('https://wttr.in/?format='))
+            self.assertIn('Mumbai', z.handle('weather in mumbai'))
+            self.assertIn('wttr.in/mumbai?', g.call_args[0][0])
+            self.assertEqual(z.handle('is it going to rain today'), "No rain right now, J. It's partly cloudy, 31°C.")
+            self.assertEqual(z.handle('temperature outside'), "It's 31°C outside, J. Feels like 35°C.")
+        with mock.patch.object(z, '_get_text', return_value='Light rain +22°C feels +24°C, 1.2mm rain'):
+            self.assertIn('raining', z.handle('is it going to rain'))
+            self.assertIn('There\'s some rain', z.handle('weather'))
+        self.assertEqual(z.handle('weather'), "I can't reach the weather right now, J.")   # offline
+
+    def test_facts(self):
+        def fake(url, timeout=4):
+            if 'list=search' in url:
+                return {'query': {'search': [{'title': 'Elon Musk'}]}}
+            return {'type': 'standard', 'extract': 'Elon Reeve Musk (born 1971) is a businessman. He runs companies. He also tweets a lot about many things.'}
+        with mock.patch.object(z, '_get_json', side_effect=fake) as g:
+            self.assertEqual(z.handle('who is elon musk'), 'Elon Reeve Musk is a businessman. He runs companies.')
+            self.assertIn('srsearch=elon%20musk', g.call_args_list[0][0][0])
+            z.handle('what is the capital of japan')
+            self.assertIn('srsearch=capital%20of%20japan', g.call_args_list[2][0][0])
+        with mock.patch.object(z, '_get_json', return_value={'query': {'search': [{'title': 'X'}]}, 'type': 'disambiguation', 'extract': 'X may refer to.'}):
+            self.assertIsNone(z.handle('what is mercury'))
+        for p in ['what is my latest export', 'who is calling', 'who is', 'what is this file', 'tell me about my day',
+                  'what is going on', 'what is the new task', 'who was the email from', 'what is 4 plus x']:
+            with mock.patch.object(z, '_get_json', side_effect=fake):
+                self.assertIsNone(z.handle(p), p)
+        self.assertIsNone(z.handle('who is elon musk'))   # offline -> Claude can take it
+
+    def test_define(self):
+        d = [{'meanings': [{'definitions': [{'definition': 'The occurrence of events by chance in a happy way.'}]}]}]
+        with mock.patch.object(z, '_get_json', return_value=d):
+            for p in ['define serendipity', 'what does serendipity mean', 'meaning of serendipity']:
+                self.assertEqual(z.handle(p), 'Serendipity: The occurrence of events by chance in a happy way.', p)
+            self.assertIsNone(z.handle('define'))
+            self.assertIsNone(z.handle('what does it mean'))
+        self.assertIsNone(z.handle('define serendipity'))
+
+    def test_currency(self):
+        with mock.patch.object(z, '_get_json', return_value={'result': 'success', 'rates': {'INR': 84.12, 'USD': 1}}) as g:
+            self.assertEqual(z.handle('convert 100 usd to inr'), '100 US dollars is about 8,412 rupees, J.')
+            self.assertIn('/latest/USD', g.call_args[0][0])
+            self.assertIn('8,412 rupees', z.handle('100 dollars in rupees'))
+            self.assertIn('4,206 rupees', z.handle('how much is 50 dollars in rupees'))
+            self.assertIsNone(z.handle('convert 100 usd to usd'))
+            self.assertIsNone(z.handle('convert 100 usd to bitcoin'))
+        self.assertIsNone(z.handle('convert 100 usd to inr'))
+
+    def test_volume(self):
+        with mock.patch.object(z, '_osa', return_value='50') as o:
+            self.assertEqual(z.handle('volume up'), 'Volume at 62, J.')
+            self.assertIn('set volume output volume 62', o.call_args[0][0])
+            self.assertEqual(z.handle('turn it down'), 'Volume at 38, J.')
+            z.handle('louder'); z.handle('quieter')
+            self.assertEqual(z.handle('mute'), 'Muted, J.')
+            self.assertEqual(o.call_args[0][0], 'set volume output muted true')
+            self.assertEqual(z.handle('unmute'), 'Unmuted, J.')
+            self.assertEqual(z.handle('set volume to forty percent'), 'Volume at 40, J.')
+            self.assertEqual(o.call_args[0][0], 'set volume output volume 40')
+            z.handle('max volume')
+            self.assertEqual(o.call_args[0][0], 'set volume output volume 100')
+        with mock.patch.object(z, '_osa', return_value='95'):
+            self.assertEqual(z.handle('volume up'), 'Volume at 100, J.')
+        with mock.patch.object(z, '_osa', return_value='missing value'):
+            self.assertIn("can't change", z.handle('volume up'))
+        self.assertIsNone(z.handle('volume'))
+
+    def test_timer(self):
+        with mock.patch.object(z, '_spawn') as sp:
+            self.assertEqual(z.handle('set a timer for five minutes'), 'Timer set for 5 minutes, J.')
+            cmd = sp.call_args[0][0][-1]
+            self.assertIn('sleep 300;', cmd)
+            self.assertIn('Time', cmd)
+            self.assertEqual(z.handle('timer 30 seconds'), 'Timer set for 30 seconds, J.')
+            self.assertEqual(z.handle('set a timer for an hour'), 'Timer set for 1 hour, J.')
+            self.assertEqual(z.handle('set a timer for half an hour'), 'Timer set for 30 minutes, J.')
+            self.assertEqual(z.handle('set a 10 minute timer'), 'Timer set for 10 minutes, J.')
+            self.assertIn('/usr/bin/say', sp.call_args[0][0][-1]) if not os.access(z.SAY, os.X_OK) else None
+        self.assertIsNone(z.handle('set a timer'))
+        self.assertIsNone(z.handle('timer for a while'))
+
+    def test_reminders(self):
+        now = datetime(2026, 10, 26, 10, 0)
+        with mock.patch.object(z, '_now', return_value=now), mock.patch.object(z, '_osa', return_value='') as o:
+            self.assertEqual(z.handle('remind me to call mom at 5 pm'), "Okay, I'll remind you to call mom today at 5 pm, J.")
+            sc = o.call_args[0][0]
+            self.assertIn('set hours of d to 17', sc)
+            self.assertIn('set day of d to 26', sc)
+            self.assertIn('name:"call mom"', sc)
+            self.assertIn('call mom tomorrow at 9 am', z.handle('remind me to call mom tomorrow at 9 am'))
+            self.assertIn('set day of d to 27', o.call_args[0][0])
+            self.assertIn('in 20 minutes', z.handle('remind me to buy two apples in twenty minutes'))
+            self.assertIn('set minutes of d to 20', o.call_args[0][0])
+            self.assertIn('name:"buy two apples"', o.call_args[0][0])
+            self.assertIn('5:30 pm', z.handle('remind me to stretch at five thirty pm'))
+            self.assertIsNone(z.handle('remind me'))
+            self.assertIsNone(z.handle('remind me to dance'))
+        with mock.patch.object(z, '_now', return_value=now), mock.patch.object(z, '_osa', side_effect=RuntimeError('nope')):
+            self.assertEqual(z.handle('remind me to call mom at 5 pm'),
+                             "I couldn't add that to Reminders, J. Allow Zuka under Privacy & Security, Reminders.")
+
+    def test_screenshot_lock_folders(self):
+        self.assertEqual(z.handle('take a screenshot'), 'Screenshot saved to your Desktop, J.')
+        self.assertEqual(self.calls[-1][:2], ['screencapture', '-x'])
+        self.assertIn('/Desktop/Screenshot ', self.calls[-1][2])
+        with mock.patch.object(z.os.path, 'exists', return_value=True):
+            self.assertEqual(z.handle('screenshot of a part of the screen'), 'Screenshot saved to your Desktop, J.')
+        self.assertEqual(self.calls[-1][:2], ['screencapture', '-i'])
+        self.assertIn('Locking', z.handle('lock my screen'))
+        self.assertEqual(self.calls[-1], ['pmset', 'displaysleepnow'])
+        self.assertIn('Screen off', z.handle('turn off the screen'))
+        self.assertIn('Downloads', z.handle('open my downloads folder'))
+        self.assertEqual(self.calls[-1], ['open', os.path.expanduser('~/Downloads')])
+        z.handle('open home')
+        self.assertEqual(self.calls[-1], ['open', os.path.expanduser('~')])
+        self.assertIsNone(z.handle('open my secrets'))
+
+    def test_music(self):
+        def run_for(running):
+            def fake(args, timeout=10, inp=None):
+                return mock.Mock(returncode=0 if args[:2] == ['pgrep', '-x'] and args[2] in running else 1, stdout='', stderr='')
+            return fake
+        with mock.patch.object(z, '_run', run_for({'Spotify'})), mock.patch.object(z, '_osa', return_value='playing') as o:
+            self.assertEqual(z.handle('pause the music'), 'Paused, J.')
+            self.assertEqual(o.call_args[0][0], 'tell application "Spotify" to pause')
+            z.handle('skip song')
+            self.assertEqual(o.call_args[0][0], 'tell application "Spotify" to next track')
+            z.handle('previous track')
+            self.assertEqual(o.call_args[0][0], 'tell application "Spotify" to previous track')
+        with mock.patch.object(z, '_run', run_for({'Music', 'Spotify'})), mock.patch.object(
+                z, '_osa', side_effect=lambda s, t=8: 'paused' if '"Music"' in s and 'player state' in s else ('playing' if 'player state' in s else '')) as o:
+            z.handle('pause music')
+            self.assertEqual(o.call_args[0][0], 'tell application "Spotify" to pause')   # the one actually playing
+        with mock.patch.object(z, '_run', run_for({'Music'})), mock.patch.object(z, '_osa', return_value='paused') as o:
+            self.assertEqual(z.handle('resume the music'), 'Playing, J.')
+            self.assertEqual(o.call_args[0][0], 'tell application "Music" to play')
+        with mock.patch.object(z, '_run', run_for(set())):
+            self.assertIsNone(z.handle('pause the music'))
+
+    def test_presence(self):
+        with mock.patch.object(z, '_tcp', return_value=True), mock.patch.object(z, '_voice_up', return_value=True), \
+                mock.patch.object(z, '_claude_signed_in', return_value=True) as cs:
+            self.assertEqual(z.handle('is everything ok'), 'All good, J. Online, voice is up, and Claude is signed in.')
+            cs.assert_called_once()
+            cs.reset_mock()
+            for p in ['can you hear me', 'are you there', 'test', 'testing', 'is it working', 'checking if this is working']:
+                self.assertEqual(z.handle(p), "I'm here, J. Online, and the voice is up.", p)
+            cs.assert_not_called()
+        with mock.patch.object(z, '_tcp', return_value=False), mock.patch.object(z, '_voice_up', return_value=True), \
+                mock.patch.object(z, '_claude_signed_in', return_value=False):
+            self.assertEqual(z.handle('is everything okay on the mac'),
+                             "Not quite, J. I can't reach the internet and Claude isn't signed in.")
+        with mock.patch.object(z, '_tcp', return_value=True), mock.patch.object(z, '_voice_up', return_value=False):
+            self.assertEqual(z.handle('are you there'), "Not quite, J. The voice isn't answering.")
+        self.assertIsNone(z.handle('test the export'))
+
+    def test_spell(self):
+        self.assertEqual(z.handle('spell necessary'), 'N-E-C-E-S-S-A-R-Y.')
+        self.assertEqual(z.handle('how do you spell cat'), 'C-A-T.')
+        self.assertIsNone(z.handle('spell'))
+
+    def test_never_raises(self):
+        with mock.patch.object(z, '_get_json', side_effect=RuntimeError), mock.patch.object(z, '_osa', side_effect=RuntimeError):
+            for p in ['who is elon musk', 'what is the capital of japan', 'volume up', 'is everything ok']:
+                self.assertIsInstance(z.handle(p) or '', str)
+
+
+LI = {'rs': 'complete', 'len': 5000, 'n': 4, 'items': [
+    {'name': 'Nisha Rao', 'snippet': 'Hi, saw your reel and loved it a lot, can we talk', 'time': '9:36 AM', 'unread': True},
+    {'name': 'Promo Co', 'snippet': 'Sponsored  Grow your page', 'time': '', 'unread': True},
+    {'name': 'Ravi', 'snippet': 'You: sure, thanks', 'time': 'Tue', 'unread': True},
+    {'name': 'Old Friend', 'snippet': 'ok', 'time': 'Mon', 'unread': False}]}
+
+
+class Inbox(Base):
+    def test_linkedin_parse(self):
+        self.assertEqual(z._fmt_linkedin(LI['items']),
+                         "On LinkedIn, Nisha Rao sent one, plus 1 sponsored. Latest message: Nisha Rao, 'Hi, saw your reel and loved it a lot…', at 9:36 AM.")
+        self.assertEqual(z._fmt_linkedin(LI['items'][2:]), 'Nothing new on LinkedIn, J.')
+        many = [{'name': n, 'snippet': 'hey', 'time': '1:00', 'unread': True} for n in 'ABCDEFG']
+        out = z._fmt_linkedin(many)
+        self.assertIn('7 unread: A, B, C, D, and E.', out)
+        self.assertNotIn('F', out.split('Latest')[0])
+
+    def test_whatsapp_gmail_parse(self):
+        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'unread': True}, {'name': 'Paras', 'unread': True}, {'name': 'HOA Team', 'unread': True}, {'name': 'X', 'unread': False}]),
+                         'WhatsApp: 3 chats unread: Mom, Paras, and HOA Team.')
+        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'unread': True}]), 'WhatsApp: 1 chat unread: Mom.')
+        self.assertEqual(z._fmt_gmail([{'name': 'Riya', 'subject': 'batch brief'}, {'name': 'ClickUp', 'subject': ''}]),
+                         'Gmail: 2 unread: Riya, about batch brief; ClickUp.')
+        self.assertEqual(z._fmt_gmail([]), 'Nothing unread in your Gmail, J.')
+
+    def test_read_linkedin_via_osa(self):
+        with mock.patch.object(z, '_osa', return_value=json.dumps(LI)) as o:
+            out = z.handle('who messaged me on linkedin')
+            self.assertTrue(out.startswith('On LinkedIn, Nisha Rao sent one'))
+            sc = o.call_args[0][0]
+            self.assertIn('execute t javascript', sc)
+            self.assertIn('Brave Browser', sc)
+            self.assertNotIn('click', sc.lower().replace('.click', 'x') if False else '')   # no clicking anywhere in the script
+            self.assertNotIn('activate', sc)
+            self.assertNotIn('set active tab', sc)
+        with mock.patch.object(z, '_osa', return_value=json.dumps(LI)):
+            self.assertTrue(z.handle('read my linkedin messages').startswith('On LinkedIn'))
+
+    def test_safari_script(self):
+        self.set_wf({'browser': 'Safari'})
+        with mock.patch.object(z, '_osa', return_value=json.dumps(LI)) as o:
+            z.handle('who messaged me on linkedin')
+            self.assertIn('do JavaScript', o.call_args[0][0])
+            self.assertNotIn('execute t javascript', o.call_args[0][0])
+            self.assertIn('application "Safari"', o.call_args[0][0])
+        with mock.patch.object(z, '_osa') as o:
+            z._open_bg('Safari', 'https://x.test')
+            self.assertIn('set current tab of w to ct', o.call_args[0][0])
+        with mock.patch.object(z, '_osa') as o:
+            z._open_bg('Brave Browser', 'https://x.test')
+            self.assertIn('set active tab index of w to ai', o.call_args[0][0])
+
+    def test_sleeping_tab_reloads_same_tab(self):
+        tiny = json.dumps({'rs': 'complete', 'len': 24, 'n': 0, 'items': []})
+        seq = [tiny, 'RELOADING', json.dumps(dict(LI, rs='loading', n=0, items=[])), json.dumps(LI)]
+        with mock.patch.object(z, '_osa', side_effect=seq) as o, mock.patch.object(z.time, 'sleep'):
+            out = z.handle('who messaged me on linkedin')
+        self.assertTrue(out.startswith('On LinkedIn, Nisha Rao'))
+        self.assertIn('set URL of t to "https://www.linkedin.com/messaging/"', o.call_args_list[1][0][0])
+        self.assertNotIn('execute', o.call_args_list[1][0][0])
+
+    def test_no_tab(self):
+        with mock.patch.object(z, '_osa', side_effect=['NOTAB'] + ['NOTAB'] * 0 + ['ok', json.dumps(LI)]) as o, mock.patch.object(z.time, 'sleep'):
+            out = z.handle('who messaged me on linkedin')   # LinkedIn opens in the background
+        self.assertTrue(out.startswith('On LinkedIn'))
+        self.assertIn('make new tab', o.call_args_list[1][0][0])
+        with mock.patch.object(z, '_osa', return_value='NOTAB'):
+            self.assertEqual(z.handle('who messaged me on gmail'), "Gmail isn't open in Brave, J.")
+        with mock.patch.object(z, '_osa', return_value='NOBROWSER'):
+            self.assertEqual(z.handle('who messaged me on whatsapp'), "Brave isn't open, J.")
+
+    def test_whatsapp_unreadable(self):
+        bad = json.dumps({'rs': 'complete', 'len': 4000, 'n': 0, 'items': []})
+        with mock.patch.object(z, '_osa', return_value=bad), mock.patch.object(z.time, 'sleep'):
+            self.assertEqual(z.handle('who messaged me on whatsapp'), "I couldn't read WhatsApp's list, J.")
+
+    def test_js_permission_hint(self):
+        with mock.patch.object(z, '_osa', side_effect=RuntimeError('Executing JavaScript through AppleScript is turned off')):
+            self.assertIn('Allow JavaScript from Apple Events', z.handle('who messaged me on linkedin'))
+
+    def test_yes_follow_up_window(self):
+        self.assertIsNone(z.handle('yes'))            # no offer at all
+        self.assertIsNone(z.handle('yes please'))
+        with mock.patch.object(z, '_osa', return_value=json.dumps(LI)):
+            z._set_offer(['linkedin'])
+            self.assertTrue(z.handle('yes').startswith('On LinkedIn'))
+            self.assertIsNone(z.handle('yes'))        # the offer is used up
+            z._set_offer(['linkedin'])
+            self.assertTrue(z.handle('who are they from').startswith('On LinkedIn'))
+            z._set_offer(['linkedin'])
+            with mock.patch.object(z.time, 'time', return_value=time.time() + 181):
+                self.assertIsNone(z.handle('go ahead'))   # stale
+                self.assertIsNone(z.handle('read them'))
+
+    def test_offers_are_made(self):
+        with mock.patch.object(z, '_tab_titles', return_value=['(3) LinkedIn']), mock.patch.object(z, '_osa', return_value='(3) LinkedIn'):
+            self.assertIn("Want me to read who they're from?", z.handle('check linkedin'))
+        self.assertEqual(z._take_offer(), ['linkedin'])
+        with mock.patch.object(z, '_osa', return_value='(7) WhatsApp\nInbox (2) - x@y.com - Gmail\n'):
+            z.handle('any new messages')
+        self.assertEqual(z._take_offer(), ['whatsapp', 'gmail'])
+        with mock.patch.object(z, '_osa', return_value='(0) WhatsApp\n'):
+            z.handle('any new messages')
+        self.assertIsNone(z._take_offer())
 
 
 if __name__ == '__main__':

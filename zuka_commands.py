@@ -425,7 +425,13 @@ def _open_tool(key):
 
 def _unread():
     try:
-        return _unread_reply(_parse_titles(_browser_titles()))
+        info = _parse_titles(_browser_titles())
+        reply = _unread_reply(info)
+        offer = [k for k, v in (('whatsapp', info['whatsapp']), ('gmail', sum(n for _, n in info['gmail']))) if v]
+        if offer:
+            _set_offer(offer)
+            reply += OFFER_TEXT
+        return reply
     except Exception:
         sb = _short(_browser())
         return f"I couldn't read your {sb} tabs. Is {sb} open?"
@@ -483,7 +489,9 @@ def _site(key):
         if not titles: return f"I opened {label}, J. It's still loading; ask me again in a second."
     n = _badge(titles)
     if not n: return f"Nothing new on {label}, J."
-    return f"{label} shows {_num(n)} new, J." + (" That's messages and notifications together. Want me to read who they're from?" if key == 'linkedin' else '')
+    if key in INBOX:
+        _set_offer([key])
+    return f"{label} shows {_num(n)} new, J." + (" That's messages and notifications together." if key == 'linkedin' else '') + (OFFER_TEXT if key in INBOX else '')
 
 
 # ---- her voice: "voice options", "try the british voice", "keep it"
@@ -600,9 +608,853 @@ def _calendar(today_only):
     return f"Next up: {t} at {_clock(d)}, {when}." if d > now else f"{t} is {when}, started at {_clock(d)}."
 
 
+# ---------------------------------------------------------------- everyday basics
+# Free, local answers for everyday asks so they never reach Claude. Each matches only when confident; else None.
+import ast
+import operator
+import shlex
+import socket
+import urllib.parse
+import urllib.request
+
+UA = 'curl/8.4.0'
+
+
+def _get_text(url, timeout=4):
+    """GET a URL as text. None on any failure."""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode('utf-8', 'replace')
+    except Exception:
+        return None
+
+
+def _get_json(url, timeout=4):
+    """GET a URL as JSON. None on any failure."""
+    txt = _get_text(url, timeout)
+    try:
+        return json.loads(txt) if txt else None
+    except ValueError:
+        return None
+
+
+def _spawn(args):
+    """Start a detached background process (survives Zuka)."""
+    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def _now():
+    return datetime.now()
+
+
+def _tcp(host, port, timeout):
+    try:
+        socket.create_connection((host, port), timeout).close()
+        return True
+    except Exception:
+        return False
+
+
+VOICE_SOCK = os.path.expanduser('~/.local/share/chatterbox/voice.sock')
+SAY = os.path.expanduser('~/.local/share/chatterbox/atticus-say')
+CLAUDE_BIN = os.path.expanduser('~/.local/bin/claude')
+
+
+# ---- number words -> digits ("fifteen percent of twenty four hundred" -> "15 percent of 2400")
+_UNITS = {w: i for i, w in enumerate('one two three four five six seven eight nine'.split(), 1)}
+_TEENS = {w: 10 + i for i, w in enumerate('ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'.split())}
+_TENS = {w: 10 * i for i, w in enumerate('twenty thirty forty fifty sixty seventy eighty ninety'.split(), 2)}
+
+
+def _words_to_digits(s):
+    toks = s.split(' ')
+    out, i = [], 0
+    while i < len(toks):
+        w = toks[i]
+        if w not in _UNITS and w not in _TEENS and w not in _TENS and w not in ('zero', 'hundred', 'thousand'):
+            out.append(w)
+            i += 1
+            continue
+        total, cur, last, used, seen_th = 0, 0, None, 0, False
+        j = i
+        while j < len(toks):
+            w = toks[j]
+            if w == 'and' and last in ('hundred', 'thousand') and j + 1 < len(toks) and (
+                    toks[j + 1] in _UNITS or toks[j + 1] in _TEENS or toks[j + 1] in _TENS):
+                j += 1
+                continue
+            if w == 'zero':
+                if last is not None: break
+                cat, v = 'unit', 0
+            elif w in _UNITS:
+                if last in ('unit', 'teen'): break
+                cat, v = 'unit', _UNITS[w]
+            elif w in _TEENS:
+                if last in ('unit', 'teen', 'tens'): break
+                cat, v = 'teen', _TEENS[w]
+            elif w in _TENS:
+                if last in ('unit', 'teen', 'tens'): break
+                cat, v = 'tens', _TENS[w]
+            elif w == 'hundred':
+                if last not in ('unit', 'teen', 'tens') or cur == 0 or cur >= 100: break
+                cat, v = 'hundred', None
+            elif w == 'thousand':
+                if seen_th or last is None: break
+                cat, v = 'thousand', None
+            else:
+                break
+            if cat == 'hundred':
+                cur *= 100
+            elif cat == 'thousand':
+                total += cur * 1000
+                cur, seen_th = 0, True
+            else:
+                cur += v
+            last = cat
+            j += 1
+            used = j - i
+        if used == 0:
+            out.append(toks[i])
+            i += 1
+            continue
+        out.append(str(total + cur))
+        i = i + used if j == i + used else j
+    return ' '.join(out)
+
+
+def _clean(raw):
+    """Lowercase request keeping digits, decimals, colons and math symbols; number words become digits."""
+    s = (raw if isinstance(raw, str) else '').lower().replace('’', "'")
+    s = re.sub(r"\b(what|that|how)'?s\b", r'\1s', s)
+    s = s.replace('×', ' times ').replace('÷', ' divided by ')
+    s = re.sub(r'\$\s*(\d[\d.,]*)', r'\1 dollars', s)
+    s = re.sub(r'₹\s*(\d[\d.,]*)', r'\1 rupees', s)
+    s = re.sub(r'(?<=\d),(?=\d{3}(?!\d))', '', s)
+    s = s.replace('%', ' percent ')
+    s = re.sub(r"[^a-z0-9.:+\-*/^() ]+", ' ', s)
+    s = re.sub(r'(?<!\d)\.|\.(?!\d)', ' ', s)
+    s = re.sub(r'(?<!\d):|:(?!\d)', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return _words_to_digits(s)
+
+
+# ---- math (safe AST walker, no eval)
+_BIN = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.Pow: operator.pow}
+
+
+def _walk(n):
+    if isinstance(n, ast.Expression):
+        return _walk(n.body)
+    if isinstance(n, ast.Constant) and type(n.value) in (int, float):
+        return n.value
+    if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+        v = _walk(n.operand)
+        return -v if isinstance(n.op, ast.USub) else v
+    if isinstance(n, ast.BinOp) and type(n.op) in _BIN:
+        a, b = _walk(n.left), _walk(n.right)
+        if isinstance(n.op, ast.Pow) and (abs(b) > 100 or (abs(a) > 1e9 and b > 3)):
+            raise ValueError('too big')
+        r = _BIN[type(n.op)](a, b)
+        if isinstance(r, complex):
+            raise ValueError('complex')
+        return r
+    raise ValueError('unsupported')
+
+
+def _safe_eval(expr):
+    if len(expr) > 120:
+        raise ValueError('long')
+    return _walk(ast.parse(expr, mode='eval'))
+
+
+def _fmt_num(v, dec=4):
+    if abs(v - round(v)) < 1e-9:
+        return f'{int(round(v)):,}'
+    return f'{v:,.{dec}f}'.rstrip('0').rstrip('.')
+
+
+_MATH_PRE = re.compile(r"^(?:hey zuka |zuka )?(?:please )?(?:(?:what is|whats|calculate|compute|work out|solve|how much is|what do you get for)\s+)?(?:the answer to )?(?:the )?")
+_MATH_POST = re.compile(r"\s+(?:please|equals?|equal to|is)$")
+
+
+def _math(raw):
+    s = _clean(raw)
+    s = _MATH_PRE.sub('', s)
+    s = _MATH_POST.sub('', s)
+    if not s or not re.search(r'\d', s):
+        return None
+    for a, b in ((r'\bmultiplied by\b|\bmultiply by\b|\btimes\b', ' * '), (r'\bdivided by\b|\bover\b', ' / '),
+                 (r'\bplus\b', ' + '), (r'\bminus\b', ' - '), (r'\bto the power of\b|\bto the power\b', ' ^ '),
+                 (r'\bsquared\b', ' ^ 2 '), (r'\bcubed\b', ' ^ 3 '), (r'\bsquare root of\b', ' sqrt '),
+                 (r'\bpercent of\b|\bpct of\b', ' pct '), (r'(?<=\d)\s*x\s*(?=\d)', ' * ')):
+        s = re.sub(a, b, s)
+    s = re.sub(r'sqrt\s*(\d+(?:\.\d+)?)', r'(\1)^0.5', s)
+    s = s.replace('^', '**').replace('pct', '*0.01*')
+    s = re.sub(r'\s+', ' ', s).strip()
+    if not re.fullmatch(r'[\d\s.+\-*/()]+', s) or not re.search(r'[+\-*/]', s) or re.fullmatch(r'[-+]?\s*[\d.]+', s):
+        return None
+    try:
+        v = _safe_eval(s)
+    except ZeroDivisionError:
+        return "I can't divide by zero, J."
+    except Exception:
+        return None
+    if abs(v) > 1e15 or v != v:
+        return None
+    return f"That's {_fmt_num(v)}, J."
+
+
+# ---- time, date, day
+_TIME_Q = re.compile(r"^(?:what time is it|whats the time|what is the time|what time is it now|whats the time now|current time|the time|time now|tell me the time|what time is it right now|got the time)(?: please)?$")
+_DATE_Q = re.compile(r"^(?:whats|what is) (?:the )?(?:date|todays date|today s date)(?: today| now)?$|^(?:whats|what is) todays? date$|^what date is it(?: today)?$|^todays date$|^what is today s date$|^whats today s date$|^today s date$")
+_DAY_Q = re.compile(r"^(?:what|which) day is it(?: today)?$|^whats the day(?: today)?$|^what day is today$|^what day is it today$")
+
+
+def _ordinal(n):
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def _time_reply(t):
+    d = _now()
+    if _TIME_Q.match(t):
+        return f"It's {_clock(d)}, J."
+    if _DATE_Q.match(t):
+        return f"It's {d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}, J."
+    if _DAY_Q.match(t):
+        return f"It's {d.strftime('%A')}, J."
+    return None
+
+
+# ---- weather
+_WEATHER = re.compile(r"^(?:(?:hows|whats|what is|how is|tell me|give me|check) (?:the )?)?(?:weather|forecast)(?: like)?(?: (?:today|right now|now|outside|out there|currently))?"
+                      r"(?: (?:in|for|at) (?P<city>[a-z][a-z ]*?))?(?: (?:today|right now|now))?$")
+_RAIN = re.compile(r"^(?:is it going to|is it gonna|will it|is it|going to|is it gonna) rain(?:ing)?(?: today| right now| now| later| outside)?$")
+_TEMP = re.compile(r"^(?:whats )?(?:the )?temperature(?: outside| out there| right now| today| now)?$|^how (?:hot|cold|warm) is it(?: outside| right now| today)?$")
+_WX = re.compile(r"^(?P<c>.+?)\s+(?P<t>[+-]?\d+)\s*°C\s+feels\s+(?P<f>[+-]?\d+)\s*°C,\s*(?P<p>[\d.]+)\s*mm rain", re.I)
+
+
+def _deg(n):
+    n = int(n)
+    return f"{'minus ' if n < 0 else ''}{abs(n)}°C"
+
+
+def _weather(kind, city=None):
+    url = 'https://wttr.in/' + (urllib.parse.quote(city) if city else '') + '?format=%C+%t+feels+%f,+%p+rain'
+    txt = _get_text(url)
+    if not txt:
+        return "I can't reach the weather right now, J."
+    m = _WX.match(txt.strip())
+    if not m:
+        return f"I couldn't find the weather for {city.title()}, J." if city else "I can't reach the weather right now, J."
+    cond, tt, ff, mm = m.group('c').strip().lower(), m.group('t'), m.group('f'), float(m.group('p'))
+    place = f"In {city.title()} right now" if city else 'Right now'
+    if kind == 'rain':
+        if mm > 0:
+            return f"Yes, it's raining {'in ' + city.title() + ' ' if city else ''}right now, J. {cond.capitalize()}, {_deg(tt)}."
+        return f"No rain right now, J. It's {cond}, {_deg(tt)}."
+    if kind == 'temp':
+        return f"It's {_deg(tt)} outside, J. Feels like {_deg(ff)}."
+    return f"{place} it's {cond}, {_deg(tt)}, feels like {_deg(ff)}." + (f" There's some rain, {mm:g} millimetres." if mm > 0 else '')
+
+
+# ---- quick facts (Wikipedia) and definitions
+_FACT_SKIP = set("my your this that these those it me our today s latest new screen file folder email message task calling going doing "
+                 "happening there here now next tomorrow yesterday wrong up on".split())
+_MATH_WORDS = {'plus', 'minus', 'times', 'divided', 'multiplied', 'percent', 'squared', 'cubed', 'root', 'power', 'over'}
+_FACT = re.compile(r"^(?:who is|who was|whos|what is|what are|what was|tell me about|whats)\s+(?:an? |the )?(?P<topic>.+)$")
+_CAPITAL = re.compile(r"^(?:(?:what is|whats) )?(?:the )?capital(?: city)? of (?P<c>[a-z][a-z ]*)$")
+_DEFINE = re.compile(r"^(?:define|definition of|meaning of|what is the meaning of|whats the meaning of|what does (?P<w2>[a-z]+) mean|what is the definition of)(?: (?P<w1>[a-z]+))?$")
+
+
+def _wiki(query):
+    q = urllib.parse.quote(query)
+    data = _get_json('https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' + q + '&format=json&srlimit=1')
+    try:
+        title = data['query']['search'][0]['title']
+    except Exception:
+        return None
+    s = _get_json('https://en.wikipedia.org/api/rest_v1/page/summary/' + urllib.parse.quote(title.replace(' ', '_'), safe=''))
+    if not isinstance(s, dict) or s.get('type') == 'disambiguation':
+        return None
+    ex = re.sub(r'\s*\([^)]*\)', '', s.get('extract') or '').strip()
+    if not ex:
+        return None
+    sents = re.split(r'(?<=[a-z0-9\)][.!?])\s+(?=[A-Z])', ex)
+    out = sents[0]
+    if len(sents) > 1 and len(out) + 1 + len(sents[1]) <= 300:
+        out += ' ' + sents[1]
+    if len(out) > 300:
+        cut = out[:300]
+        k = max(cut.rfind('; '), cut.rfind(', '))
+        out = (cut[:k] if k > 120 else cut.rsplit(' ', 1)[0]).rstrip(',;:') + '.'
+    return out
+
+
+def _fact(t, raw):
+    m = _CAPITAL.match(t)
+    if m:
+        return _wiki('capital of ' + m.group('c').strip())
+    m = _FACT.match(t)
+    if not m:
+        return None
+    topic = m.group('topic').strip()
+    words = topic.split()
+    if not words or len(words) > 6 or not re.search(r'[a-z]', topic):
+        return None
+    if _FACT_SKIP & set(words) or _MATH_WORDS & set(words) or (len(words) == 1 and words[0].endswith('ing')):
+        return None
+    if _math(raw):
+        return None
+    return _wiki(topic)
+
+
+def _define(t):
+    m = _DEFINE.match(t)
+    if not m:
+        return None
+    w = m.group('w2') or m.group('w1')
+    if not w or w in _FACT_SKIP or w in ('it', 'that', 'this'):
+        return None
+    d = _get_json('https://api.dictionaryapi.dev/api/v2/entries/en/' + urllib.parse.quote(w))
+    try:
+        df = d[0]['meanings'][0]['definitions'][0]['definition'].strip().rstrip('.')
+    except Exception:
+        return None
+    return f"{w.capitalize()}: {df}." if df else None
+
+
+# ---- currency
+_CUR = {'dollar': 'USD', 'dollars': 'USD', 'usd': 'USD', 'us dollar': 'USD', 'us dollars': 'USD', 'bucks': 'USD',
+        'rupee': 'INR', 'rupees': 'INR', 'inr': 'INR', 'indian rupee': 'INR', 'indian rupees': 'INR',
+        'euro': 'EUR', 'euros': 'EUR', 'eur': 'EUR', 'pound': 'GBP', 'pounds': 'GBP', 'gbp': 'GBP',
+        'british pound': 'GBP', 'british pounds': 'GBP', 'dirham': 'AED', 'dirhams': 'AED', 'aed': 'AED',
+        'yen': 'JPY', 'jpy': 'JPY'}
+_CUR_NAME = {'USD': ('US dollar', 'US dollars'), 'INR': ('rupee', 'rupees'), 'EUR': ('euro', 'euros'),
+             'GBP': ('pound', 'pounds'), 'AED': ('dirham', 'dirhams'), 'JPY': ('yen', 'yen')}
+_CURRENCY = re.compile(r"^(?:(?:please )?convert |how much is |what is |whats |how many )?(?P<n>\d+(?:\.\d+)?) (?P<a>[a-z]+(?: [a-z]+)?) (?:to|in|into) (?P<b>[a-z]+(?: [a-z]+)?)$")
+
+
+def _currency(raw):
+    m = _CURRENCY.match(_clean(raw))
+    if not m:
+        return None
+    a, b = _CUR.get(m.group('a')), _CUR.get(m.group('b'))
+    if not a or not b or a == b:
+        return None
+    d = _get_json('https://open.er-api.com/v6/latest/' + a)
+    try:
+        rate = float(d['rates'][b])
+    except Exception:
+        return None
+    n = float(m.group('n'))
+    out = n * rate
+    one = lambda c, v: _CUR_NAME[c][0] if abs(v - 1) < 1e-9 else _CUR_NAME[c][1]
+    res = _fmt_num(out, 0 if out >= 100 else 2)
+    return f"{_fmt_num(n)} {one(a, n)} is about {res} {one(b, round(out, 2))}, J."
+
+
+# ---- volume
+_VOL_UP = re.compile(r"^(?:volume up|turn (?:it |the volume |the sound )?up|turn up the volume|louder|make it louder|a bit louder|increase (?:the )?volume|raise (?:the )?volume|volume higher|sound up)$")
+_VOL_DOWN = re.compile(r"^(?:volume down|turn (?:it |the volume |the sound )?down|turn down the volume|quieter|make it quieter|a bit quieter|softer|lower (?:the )?volume|decrease (?:the )?volume|reduce (?:the )?volume|volume lower|sound down)$")
+_VOL_MUTE = re.compile(r"^(?:mute|mute (?:it|the sound|the volume|the mac|sound))$")
+_VOL_UNMUTE = re.compile(r"^(?:unmute|unmute (?:it|the sound|the volume|the mac|sound))$")
+_VOL_MAX = re.compile(r"^(?:max(?:imum)? volume|full volume|volume (?:to )?(?:max|full|maximum)|turn it up (?:all the way|to max))$")
+_VOL_SET = re.compile(r"^(?:set |put |make )?(?:the )?volume (?:to |at )?(\d{1,3})(?: percent)?$")
+
+
+def _volume(t, raw):
+    s = _clean(raw)
+    s = re.sub(r"[^a-z0-9 ]", '', s)
+    m = _VOL_SET.match(s)
+    if m:
+        n = max(0, min(100, int(m.group(1))))
+        _osa(f'set volume output volume {n}')
+        return f"Volume at {n}, J."
+    if _VOL_MAX.match(t):
+        _osa('set volume output volume 100')
+        return "Volume's at max, J."
+    if _VOL_MUTE.match(t):
+        _osa('set volume output muted true')
+        return "Muted, J."
+    if _VOL_UNMUTE.match(t):
+        _osa('set volume output muted false')
+        return "Unmuted, J."
+    up, down = _VOL_UP.match(t), _VOL_DOWN.match(t)
+    if not (up or down):
+        return None
+    try:
+        cur = int(_osa('output volume of (get volume settings)'))
+    except Exception:
+        return "I can't change the volume on this output, J."
+    n = max(0, min(100, cur + (12 if up else -12)))
+    _osa(f'set volume output volume {n}' + (' without output muted' if False else '') + ('\nset volume output muted false' if up else ''))
+    return f"Volume at {n}, J."
+
+
+# ---- timer
+_DUR = r"(?P<n>\d+(?:\.\d+)?|an?|half an?)\s*(?P<u>seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+_DUR0 = r"(?:\d+(?:\.\d+)?|an?|half an?)\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)"
+_TIMER = re.compile(r"^(?:(?:set|start|put|make|create) )?(?:me )?(?:a |an )?(?:timer|countdown)(?: for| of)? " + _DUR0 + r"$|^(?:set|start|put) (?:a |an )?" + _DUR0 + r" timer$|^timer " + _DUR0 + r"$")
+
+
+def _dur_secs(m):
+    n = m.group('n')
+    v = 0.5 if n.startswith('half') else (1.0 if n in ('a', 'an') else float(n))
+    u = m.group('u')[0]
+    return int(round(v * {'s': 1, 'm': 60, 'h': 3600}[u]))
+
+
+def _human_dur(secs):
+    if secs % 3600 == 0:
+        n, u = secs // 3600, 'hour'
+    elif secs % 60 == 0:
+        n, u = secs // 60, 'minute'
+    else:
+        n, u = secs, 'second'
+    return f"{n} {u}{'' if n == 1 else 's'}"
+
+
+def _timer(raw):
+    s = _clean(raw)
+    m = _TIMER.match(s)
+    if not m:
+        return None
+    # the duration groups repeat per alternative; find the one that matched
+    m2 = re.search(_DUR, s)
+    secs = _dur_secs(m2)
+    if secs < 1 or secs > 86400:
+        return "I can set timers up to a day, J."
+    say = SAY if os.access(SAY, os.X_OK) else None
+    speak = f"{shlex.quote(SAY)} -- \"Time's up, J.\"" if say else "/usr/bin/say \"Time's up, J.\""
+    note = 'display notification "Time\'s up, J." with title "Zuka timer"'
+    _spawn(['/bin/sh', '-c', f"sleep {secs}; /usr/bin/osascript -e {shlex.quote(note)}; {speak}"])
+    return f"Timer set for {_human_dur(secs)}, J."
+
+
+# ---- reminders
+_REM_IN = re.compile(r"^remind me (?:to )?(?P<task>.+?) in " + _DUR + r"$")
+_REM_AT = re.compile(r"^remind me (?:to )?(?P<task>.+?)(?P<day> tomorrow| today| tonight)?(?: at (?P<h>\d{1,2})(?:[: ]?(?P<mi>\d{2}))? ?(?P<ap>am|pm|a m|p m)?)(?P<day2> tomorrow| today| tonight)?$")
+_REM_TOMORROW = re.compile(r"^remind me (?:to )?(?P<task>.+?) tomorrow$")
+
+
+def _as_str(s):
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _remind(raw):
+    low = re.sub(r"\s+", ' ', raw.lower().replace('’', "'")).strip().rstrip('.!?')
+    if not low.startswith('remind me'):
+        return None
+    low = re.sub(r"\bremind me to\b", 'remind me to', low)
+    now = _now()
+    m = _REM_IN.match(_words_to_digits(low)) if re.search(r' in (?:\d|an? |half|[a-z]+ (?:min|hour|sec))', low) else None
+    # task text must come from the original words; only the duration needs digits
+    if m:
+        task = re.match(r"^remind me (?:to )?(.+) in [^ ]+(?: [^ ]+){0,3}$", low)
+        idx = low.rfind(' in ')
+        task = re.sub(r"^remind me (?:to )?", '', low[:idx]).strip()
+        when, label = now + timedelta(seconds=_dur_secs(m)), f"in {_human_dur(_dur_secs(m))}"
+    else:
+        fixed = _words_to_digits(low)
+        m = _REM_AT.match(fixed)
+        mt = None if m else _REM_TOMORROW.match(low)
+        if not m and not mt:
+            return None
+        if mt:
+            task, h, mi, ap, tomorrow = mt.group('task'), 9, 0, 'am', True
+        else:
+            idx = low.rfind(' at ')
+            tail = low[idx:]
+            task = re.sub(r"^remind me (?:to )?", '', low[:idx]).strip()
+            task = re.sub(r"\s+(tomorrow|today|tonight)$", '', task)
+            h, mi = int(m.group('h')), int(m.group('mi') or 0)
+            ap = (m.group('ap') or '').replace(' ', '')
+            day = (m.group('day') or m.group('day2') or '').strip()
+            tomorrow = day == 'tomorrow' or ' tomorrow' in tail
+            if h > 23 or mi > 59 or (ap and not 1 <= h <= 12):
+                return None
+            if day == 'tonight' and not ap:
+                ap = 'pm'
+        if ap == 'pm' and h < 12:
+            h += 12
+        elif ap == 'am' and h == 12:
+            h = 0
+        base = now.replace(second=0, microsecond=0)
+        if mt or ap or h > 12 or h == 0:
+            when = base.replace(hour=h, minute=mi) + timedelta(days=1 if tomorrow else 0)
+            if not tomorrow and when <= now:
+                when += timedelta(days=1)
+        else:   # no am/pm: the soonest future reading of that hour
+            cands = [base.replace(hour=(h % 12) + off, minute=mi) + timedelta(days=1 if tomorrow else 0) for off in (0, 12)]
+            if tomorrow:
+                when = cands[0] if 7 <= h <= 11 else cands[1]
+            else:
+                fut = sorted(c for c in cands if c > now) or [min(cands) + timedelta(days=1)]
+                when = fut[0]
+        day_word = 'tomorrow' if when.date() > now.date() else 'today'
+        label = f"{day_word} at {_clock(when)}"
+    if not task:
+        return None
+    script = ('set d to current date\nset day of d to 1\nset year of d to %d\nset month of d to %d\nset day of d to %d\n'
+              'set hours of d to %d\nset minutes of d to %d\nset seconds of d to 0\n'
+              'tell application "Reminders" to make new reminder with properties {name:%s, remind me date:d}'
+              % (when.year, when.month, when.day, when.hour, when.minute, _as_str(task)))
+    try:
+        _osa(script, 20)
+    except Exception:
+        return "I couldn't add that to Reminders, J. Allow Zuka under Privacy & Security, Reminders."
+    return f"Okay, I'll remind you to {task} {label}, J."
+
+
+# ---- screenshot, lock, folders
+_SHOT = re.compile(r"^(?:take (?:a )?)?(?:screenshot|screen shot|screen capture)$")
+_SHOT_AREA = re.compile(r"^(?:take (?:a )?)?(?:screenshot|screen shot)(?: of)? (?:a |the |part of the |an? )?(?:part|area|selection|portion|region)(?: of (?:the |my )?screen)?$|^(?:take (?:a )?)?(?:partial|area|selection) screenshot$")
+_LOCK = re.compile(r"^(?:lock (?:my |the )?(?:screen|mac|computer|laptop|macbook))$")
+_SCREEN_OFF = re.compile(r"^(?:turn off (?:the |my )?(?:screen|display)|sleep (?:the |my )?display|put (?:the |my )?(?:screen|display) to sleep|screen off|display off)$")
+_FOLDER = re.compile(r"^open (?:my |the )?(?P<f>downloads|desktop|documents|movies|pictures|music|home)(?: folder)?$")
+
+
+def _screenshot(area):
+    path = os.path.expanduser(f"~/Desktop/Screenshot {_now().strftime('%Y-%m-%d at %H.%M.%S')}.png")
+    r = _run(['screencapture'] + (['-i'] if area else ['-x']) + [path], 60 if area else 10)
+    if r.returncode != 0:
+        return "I couldn't take it, J. Allow Zuka under Privacy & Security, Screen Recording."
+    if area and not os.path.exists(path):
+        return "No screenshot taken, J."
+    return "Screenshot saved to your Desktop, J."
+
+
+# ---- music
+_MUSIC = [(re.compile(r"^(?:pause|stop|hold)(?: the| this)? (?:music|song|track|playing|playback)$"), 'pause', 'Paused, J.'),
+          (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this)? (?:music|song|track)$|^(?:resume|unpause)$"), 'play', 'Playing, J.'),
+          (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track)$|^skip this$"), 'next track', 'Next one, J.'),
+          (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track)$|^play the previous (?:song|track)$"), 'previous track', 'Going back, J.')]
+
+
+def _music(t):
+    for rx, cmd, reply in _MUSIC:
+        if t in ('resume', 'unpause') and cmd == 'play':
+            pass
+        if rx.match(t):
+            break
+    else:
+        return None
+    running = [a for a in ('Music', 'Spotify') if _run(['pgrep', '-x', a], 3).returncode == 0]
+    if not running:
+        return None
+    pick = None
+    for a in running:   # prefer whichever is playing right now
+        try:
+            if _osa(f'tell application "{a}" to return (player state as text)', 5).lower().startswith('play'):
+                pick = a
+                break
+        except Exception:
+            continue
+    pick = pick or running[0]
+    _osa(f'tell application "{pick}" to {cmd}', 8)
+    return reply
+
+
+# ---- presence / health
+_PRESENT = re.compile(r"^(?:hello |hey |hi )?(?:can you hear me|are you there|you there|test|testing(?: testing)?(?: one two)?|are you working|checking if (?:it|this|that) (?:is )?working|is (?:it|this|that) working)$")
+_DEEP = re.compile(r"^is everything (?:ok|okay|alright|working|fine)(?: on the (?:mac|cloud))?$")
+
+
+def _voice_up():
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.5)
+        s.connect(VOICE_SOCK)
+        s.sendall(b'{"ping":1}\n')
+        ok = b'ok' in s.recv(64)
+        s.close()
+        return ok
+    except Exception:
+        return False
+
+
+def _claude_signed_in():
+    for exe in (CLAUDE_BIN, 'claude'):
+        try:
+            r = _run([exe, 'auth', 'status'], 8)
+            return bool(json.loads(r.stdout or '{}').get('loggedIn'))
+        except Exception:
+            continue
+    return False
+
+
+def _health(deep):
+    online = _tcp('api.anthropic.com', 443, 1.2)
+    voice = _voice_up()
+    signed = _claude_signed_in() if deep else None
+    if online and voice and signed is not False:
+        if deep:
+            return "All good, J. Online, voice is up, and Claude is signed in."
+        return "I'm here, J. Online, and the voice is up."
+    bad = []
+    if not online:
+        bad.append("I can't reach the internet")
+    if not voice:
+        bad.append("the voice isn't answering")
+    if signed is False:
+        bad.append("Claude isn't signed in")
+    return "Not quite, J. " + _say_list([b[0].upper() + b[1:] if i == 0 else b for i, b in enumerate(bad)]) + '.'
+
+
+# ---- spell
+_SPELL = re.compile(r"^(?:spell|how do you spell|how to spell|spell the word|how do i spell) (?P<w>[a-z]+)$")
+
+
+def _basics(t, raw):
+    """Everyday basics. None unless confident. Never raises."""
+    try:
+        if _PRESENT.match(t):
+            return _health(False)
+        if _DEEP.match(t):
+            return _health(True)
+        m = _SPELL.match(t)
+        if m:
+            return '-'.join(m.group('w').upper()) + '.'
+        r = _volume(t, raw)
+        if r:
+            return r
+        r = _timer(raw)
+        if r:
+            return r
+        if t.startswith('remind me'):
+            return _remind(raw)
+        if _SHOT_AREA.match(t):
+            return _screenshot(True)
+        if _SHOT.match(t):
+            return _screenshot(False)
+        if _LOCK.match(t):
+            _run(['pmset', 'displaysleepnow'], 5)
+            return "Locking up, J."
+        if _SCREEN_OFF.match(t):
+            _run(['pmset', 'displaysleepnow'], 5)
+            return "Screen off, J."
+        m = _FOLDER.match(t)
+        if m:
+            f = m.group('f')
+            _run(['open', os.path.expanduser('~' if f == 'home' else '~/' + f.capitalize())], 10)
+            return f"Opening {'your home folder' if f == 'home' else f.capitalize()}, J."
+        r = _music(t)
+        if r:
+            return r
+        r = _time_reply(t)
+        if r:
+            return r
+        m = _WEATHER.match(t)
+        if m:
+            return _weather('now', (m.group('city') or '').strip() or None)
+        if _RAIN.match(t):
+            return _weather('rain')
+        if _TEMP.match(t):
+            return _weather('temp')
+        r = _currency(raw)
+        if r:
+            return r
+        r = _define(t)
+        if r:
+            return r
+        r = _math(raw)
+        if r:
+            return r
+        return _fact(t, raw)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------- "who messaged me": read-only inbox readers
+OFFER_FILE = os.path.expanduser('~/.config/atticus/offer.json')
+OFFER_TEXT = " Want me to read who they're from?"
+OFFER_WINDOW = 180
+
+
+def _set_offer(sites):
+    try:
+        os.makedirs(os.path.dirname(OFFER_FILE), exist_ok=True)
+        with open(OFFER_FILE, 'w') as f:
+            json.dump({'sites': list(sites), 'at': time.time()}, f)
+    except OSError:
+        pass
+
+
+def _take_offer():
+    """The sites offered in the last 3 minutes (and clears the offer), else None."""
+    try:
+        with open(OFFER_FILE) as f:
+            d = json.load(f)
+        os.remove(OFFER_FILE)
+    except (OSError, ValueError):
+        return None
+    if isinstance(d, dict) and time.time() - d.get('at', 0) <= OFFER_WINDOW and d.get('sites'):
+        return [s for s in d['sites'] if s in INBOX]
+    return None
+
+
+_LI_JS = ("(function(){var rows=[].slice.call(document.querySelectorAll('li.msg-conversation-listitem'));"
+          "var items=rows.map(function(r){var q=function(s){var e=r.querySelector(s);return e?(e.innerText||'').trim():''};"
+          "var ci=r.querySelector('.msg-conversation-card__convo-item,[class*=convo-item]');"
+          "var un=!!((ci&&/unread/i.test(ci.className))||r.querySelector('.notification-badge--show,[class*=unread-count]'));"
+          "return {name:q('[class*=participant-names]'),snippet:q('[class*=message-snippet]'),time:q('time'),unread:un}});"
+          "return JSON.stringify({rs:document.readyState,len:(document.body.innerText||'').length,n:rows.length,items:items})})()")
+_WA_JS = ("(function(){var ps=document.querySelector('#pane-side');var rows=ps?[].slice.call(ps.querySelectorAll('[role=listitem],[role=row]')):[];"
+          "var seen={},items=[];rows.forEach(function(r){var sp=r.querySelectorAll('span[title]');var name=sp[0]?sp[0].getAttribute('title'):'';"
+          "if(!name||seen[name])return;seen[name]=1;var un=[].slice.call(r.querySelectorAll('[aria-label]')).some(function(e){return /unread message/i.test(e.getAttribute('aria-label'))});"
+          "items.push({name:name,snippet:sp[1]?sp[1].getAttribute('title'):'',unread:un})});"
+          "return JSON.stringify({rs:document.readyState,len:(document.body.innerText||'').length,n:items.length,items:items})})()")
+_GM_JS = ("(function(){var rows=[].slice.call(document.querySelectorAll('tr.zE'));"
+          "var items=rows.map(function(r){var s=r.querySelector('.yW span[email]');var sub=r.querySelector('.bog');"
+          "return {name:s?(s.getAttribute('name')||s.innerText||'').trim():'',subject:sub?(sub.innerText||'').trim():'',unread:true}});"
+          "return JSON.stringify({rs:document.readyState,len:(document.body.innerText||'').length,n:items.length,items:items,any:document.querySelectorAll('tr.zA').length})})()")
+
+
+def _snip(s, n=40):
+    s = re.sub(r'\s+', ' ', s or '').strip()
+    return s if len(s) <= n else s[:n].rsplit(' ', 1)[0].rstrip(',;:-') + '…'
+
+
+def _names(names):
+    names = names[:5]
+    return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ', and ' + names[-1]
+
+
+def _fmt_linkedin(items):
+    unread = [i for i in items if i.get('unread') and not (i.get('snippet') or '').lower().startswith('you:')]
+    spons = [i for i in unread if (i.get('snippet') or '').lower().startswith('sponsored')]
+    real = [i for i in unread if i not in spons]
+    if not real and not spons:
+        return "Nothing new on LinkedIn, J."
+    tail = f", plus {len(spons)} sponsored" if spons else ''
+    if not real:
+        return f"On LinkedIn, just {len(spons)} sponsored, J."
+    first = real[0]
+    late = f" Latest message: {first['name']}, '{_snip(first.get('snippet'))}'" + (f", at {first['time']}." if first.get('time') else '.')
+    if len(real) == 1:
+        return f"On LinkedIn, {first['name']} sent one{tail}.{late}"
+    return f"On LinkedIn, {len(real)} unread: {_names([i['name'] for i in real])}{tail}.{late}"
+
+
+def _fmt_whatsapp(items):
+    un = [i['name'] for i in items if i.get('unread')]
+    if not un:
+        return "Nothing unread on WhatsApp, J."
+    return f"WhatsApp: {len(un)} chat{'' if len(un) == 1 else 's'} unread: {_names(un)}."
+
+
+def _fmt_gmail(items):
+    if not items:
+        return "Nothing unread in your Gmail, J."
+    bits = [(i['name'] or 'Someone') + (f", about {_snip(i['subject'])}" if i.get('subject') else '') for i in items[:5]]
+    return f"Gmail: {len(items)} unread: " + '; '.join(bits) + '.'
+
+
+# site -> (label, tab URL fragment, inbox URL, js, formatter, may open a tab when none is open)
+INBOX = {'linkedin': ('LinkedIn', 'linkedin.com/messaging', 'https://www.linkedin.com/messaging/', _LI_JS, _fmt_linkedin, True),
+         'whatsapp': ('WhatsApp', 'web.whatsapp.com', 'https://web.whatsapp.com/', _WA_JS, _fmt_whatsapp, False),
+         'gmail': ('Gmail', 'mail.google.com', 'https://mail.google.com/mail/u/0/#inbox', _GM_JS, _fmt_gmail, False)}
+
+
+def _tab_exec(b, host, js, goto=None):
+    """Run js in the first tab whose URL contains host (read-only, never activates it). With goto, only points that
+    tab at the inbox URL instead. Returns the script's text, or NOBROWSER / NOTAB."""
+    safari = _is_safari(b)
+    act = f'set URL of t to {_as_str(goto)}\nreturn "RELOADING"' if goto else (
+        f'return (do JavaScript {_as_str(js)} in t)' if safari else f'return (execute t javascript {_as_str(js)})')
+    return _osa('if application "%s" is not running then return "NOBROWSER"\ntell application "%s"\n repeat with w in windows\n'
+                '  repeat with t in tabs of w\n   if (URL of t) contains "%s" then\n%s\n   end if\n  end repeat\n end repeat\nend tell\nreturn "NOTAB"'
+                % (b, b, host, act), 15)
+
+
+def _open_bg(b, url):
+    """New tab in the background; the tab you're on stays active."""
+    if _is_safari(b):
+        _osa('tell application "%s"\n if (count of windows) = 0 then make new document\n set w to front window\n set ct to current tab of w\n'
+             ' tell w to make new tab with properties {URL:%s}\n set current tab of w to ct\nend tell' % (b, _as_str(url)), 15)
+    else:
+        _osa('tell application "%s"\n if (count of windows) = 0 then make new window\n set w to front window\n set ai to active tab index of w\n'
+             ' tell w to make new tab with properties {URL:%s}\n set active tab index of w to ai\nend tell' % (b, _as_str(url)), 15)
+
+
+def _poll(b, host, js, tries=8):
+    """Read until the page has rows and has finished loading (up to ~8 s). -> parsed dict or None."""
+    data = None
+    for _ in range(tries):
+        time.sleep(1)
+        try:
+            data = json.loads(_tab_exec(b, host, js))
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get('n') and data.get('rs') == 'complete':
+            return data
+    return data if isinstance(data, dict) else None
+
+
+def _read_inbox(key, may_open=None):
+    label, host, url, js, fmt, can_open = INBOX[key]
+    b = _browser()
+    sb = _short(b)
+    try:
+        raw = _tab_exec(b, host, js)
+        if raw == 'NOBROWSER':
+            return f"{sb} isn't open, J."
+        if raw == 'NOTAB':
+            if not (can_open if may_open is None else may_open):
+                return f"{label} isn't open in {sb}, J."
+            _open_bg(b, url)
+            data = _poll(b, host, js)
+        else:
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get('len', 0) < 300:   # a sleeping tab: wake the same tab on its inbox
+                _tab_exec(b, host, js, goto=url)
+                data = _poll(b, host, js)
+    except Exception as e:
+        if 'javascript' in str(e).lower() and not _is_safari(b):
+            return f"I can't read {sb} tabs yet, J. In {sb}, turn on View, Developer, Allow JavaScript from Apple Events."
+        if 'javascript' in str(e).lower():
+            return "I can't read Safari tabs yet, J. In Safari, turn on Develop, Allow JavaScript from Apple Events."
+        return f"I couldn't read {label}, J."
+    if not isinstance(data, dict) or not isinstance(data.get('items'), list) or (not data['items'] and key != 'gmail'):
+        return f"I couldn't read {label}'s list, J." if key == 'whatsapp' else f"I couldn't read {label}, J."
+    if key == 'gmail' and not data['items'] and not data.get('any') and data.get('len', 0) < 300:
+        return "I couldn't read Gmail, J."
+    return fmt(data['items'])
+
+
+_WHO = re.compile(r"^who (?:has |all )?(?:messaged|texted|emailed|mailed|wrote|dm ?e?d|sent)(?: me)?(?: (?:on|in|from) (?P<s>linkedin|whatsapp|gmail|mail|email))?(?: today| lately| just now| recently)?$")
+_READ_MSGS = re.compile(r"^(?:read|show) (?:me )?(?:my )?(?P<s>linkedin|whatsapp|gmail) (?:messages|dms|mail|emails?|inbox)$")
+_FOLLOW = re.compile(r"^(?:who are they from|who sent them|who are they|read them|read them out|read them to me|who is it from|whos it from|who from)$")
+_YES = re.compile(r"^(?:yes|yes please|yeah|yep|sure|go ahead|please do|yes go ahead|ok|okay|yes read them)$")
+
+
+def _site_key(s):
+    return {'mail': 'gmail', 'email': 'gmail', 'emails': 'gmail'}.get(s, s)
+
+
+def _inbox_phrase(t):
+    """'who messaged me', 'read my linkedin messages', and the follow-up 'yes' / 'read them' after an offer."""
+    m = _WHO.match(t) or _READ_MSGS.match(t)
+    if m:
+        s = m.groupdict().get('s') or ('gmail' if re.search(r'\b(?:e?mailed|mail)\b', t) else None)   # "who emailed me" = Gmail only
+        if s:
+            return _read_inbox(_site_key(s))
+        out = [r for r in (_read_inbox(k, False) for k in INBOX) if r and "isn't open" not in r]
+        return ' '.join(out) if out else "LinkedIn, WhatsApp and Gmail aren't open in your browser, J."
+    if _FOLLOW.match(t) or _YES.match(t):
+        sites = _take_offer()
+        if not sites:
+            return None   # a bare yes with no fresh offer may answer an approval card
+        return ' '.join(_read_inbox(k) for k in sites)
+    return None
+
+
 # ---------------------------------------------------------------- entry
 def handle(t):
     try:
+        raw = t if isinstance(t, str) else ''
         t = _norm(t)
         if not t:
             return None
@@ -619,6 +1471,9 @@ def handle(t):
         m = _open_re(tools).match(t) if tools else None
         if m:
             return _open_tool(m.group(3))
+        r = _inbox_phrase(t)
+        if r:
+            return r
         if _UNREAD.match(t):
             return _unread()
         if _VOICE_LIST.match(t):
@@ -636,6 +1491,6 @@ def handle(t):
             return _calendar(False)
         if _CAL_TODAY.match(t):
             return _calendar(True)
-        return None
+        return _basics(t, raw)
     except Exception:
         return FAIL

@@ -161,6 +161,15 @@ class NativeTests(unittest.TestCase):
              patch('urllib.request.urlopen', side_effect=OSError):
             self.assertIn('lofi mix', atticus.youtube_play(None))   # nothing named: their usual music, it just plays
 
+    def test_apps_open_by_any_whole_word_of_their_name(self):
+        apps = {'Brave Browser', 'Adobe Premiere Pro 2025', 'Adobe Premiere Pro 2026', 'Adobe Media Encoder 2026', 'Notes', 'Final Cut Pro', 'Logic Pro'}
+        with patch.object(atticus, 'installed_apps', return_value=apps):
+            self.assertEqual(atticus.app_named('brave'), 'Brave Browser')
+            self.assertEqual(atticus.app_named('premiere'), 'Adobe Premiere Pro 2026')   # the newest version
+            self.assertEqual(atticus.app_named('media encoder'), 'Adobe Media Encoder 2026')
+            self.assertIsNone(atticus.app_named('pro'))     # too short and ambiguous
+            self.assertIsNone(atticus.app_named('adobe'))   # two different apps
+
     def test_helpers_are_gated_by_zuka_not_refused_by_dont_ask(self):
         src = (ROOT / 'atticus.py').read_text()
         self.assertIn("'--permission-mode', 'bypassPermissions', '--disallowedTools', *DENY,", src)
