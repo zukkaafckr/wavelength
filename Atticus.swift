@@ -7507,13 +7507,30 @@ final class WakeListener {
         guard let id = audioProp(sys, kAudioHardwarePropertyDefaultInputDevice, AudioDeviceID(0)).first, let mic = microphones().first(where: { $0.id == id }) else { return true }
         return [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(mic.transport)
     }
+    private var lastWhy = ""
+    func note(_ why: String) {   // ~/.config/atticus/wake.log: why the wake word is (not) listening, only when that changes
+        guard why != lastWhy else { return }; lastWhy = why
+        let line = "\(Date()) \(why)\n", path = (Prefs.path as NSString).deletingLastPathComponent + "/wake.log"
+        if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() } else { try? line.write(toFile: path, atomically: true, encoding: .utf8) }
+    }
+    private func whyNot() -> String {
+        if !Prefs.bool("wakeWord") { return "off in settings" }
+        if Prefs.bool("paused") { return "paused" }
+        if app.engine.isRunning || app.busy || app.voice?.isRunning == true || app.greeter != nil { return "busy (listening, working or talking)" }
+        if SFSpeechRecognizer.authorizationStatus() != .authorized { return "speech recognition not allowed (\(SFSpeechRecognizer.authorizationStatus().rawValue))" }
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized { return "microphone not allowed" }
+        if WakeListener.bluetoothMic() { return "bluetooth or unknown mic" }
+        return ""
+    }
     private func tick() {
-        guard wanted else { if engine != nil { stop() }; return }
+        let why = whyNot()
+        guard why.isEmpty else { note("waiting: " + why); if engine != nil { stop() }; return }
         if engine == nil || (!woke && Date().timeIntervalSince(started) > 50) { stop(); start() }   // recognition tasks are capped near a minute
     }
     private var names: [String] { Array(Set([Prefs.assistantName.lowercased(), "zuka", "zooka", "zuca", "zukaa", "zucca"])).filter { $0.count >= 3 } }
     private func start() {
-        guard let r = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), r.isAvailable, r.supportsOnDeviceRecognition else { return }
+        guard let r = SFSpeechRecognizer(locale: Locale(identifier: "en-US")) else { note("no en-US recognizer"); return }
+        guard r.isAvailable, r.supportsOnDeviceRecognition else { note("recognizer unavailable=\(!r.isAvailable) onDevice=\(r.supportsOnDeviceRecognition)"); return }
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.requiresOnDeviceRecognition = true; req.shouldReportPartialResults = true; req.contextualStrings = [Prefs.assistantName, "Zuka"]
         let e = AVAudioEngine(), input = e.inputNode
@@ -7527,24 +7544,31 @@ final class WakeListener {
                 one.frameLength = buf.frameLength; dst.update(from: src, count: Int(buf.frameLength)); req.append(one)
             }
             try e.start()
-        } catch { input.removeTap(onBus: 0); try? input.setVoiceProcessingEnabled(false); return }
-        engine = e; request = req; started = Date(); woke = false; rest = ""
+        } catch { note("mic failed: \(error.localizedDescription)"); input.removeTap(onBus: 0); try? input.setVoiceProcessingEnabled(false); return }
+        engine = e; request = req; started = Date(); woke = false; rest = ""; note("listening for the wake word")
         task = r.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, self.request === req else { return }
-                if let text = result?.bestTranscription.formattedString { self.heard(text) }
+                if let text = result?.bestTranscription.formattedString { self.note("heard: " + String(text.suffix(60))); self.heard(text) }
+                if let error { self.note("recognition stopped: \(error.localizedDescription)") }
                 if error != nil || result?.isFinal == true { if !self.woke { self.stop() } }   // the next tick starts a fresh one
             }
         }
     }
-    private var opened = false, ack: Process?
+    private var opened = false, ack: Process?, early: DispatchWorkItem?
     private func heard(_ text: String) {
         let low = text.lowercased()
+        // the first sound of her name ("Zo…", "Zuo…") already shows the box; if it wasn't her name it closes again, silently
+        if !woke, !opened, !app.panel.isVisible, low.range(of: #"^\s*(zu|zo|zoo|zuo|zuk|zook)\w*$"#, options: .regularExpression) != nil {
+            opened = true; app.show(); app.js("listen")
+            let undo = DispatchWorkItem { [weak self] in guard let self, !self.woke, self.opened else { return }; self.opened = false; app.close(clear: false) }
+            early = undo; DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: undo)
+        }
         guard let hit = names.compactMap({ n in low.range(of: "\\b" + NSRegularExpression.escapedPattern(for: n) + "\\b", options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound }) else { return }
         rest = String(text[hit.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces))
         if !woke {   // the moment she hears her name: the box opens listening and she answers, all at once
-            woke = true; opened = true
-            app.show(); app.js("listen")
+            woke = true; early?.cancel(); early = nil
+            if !opened || !app.panel.isVisible { app.show(); app.js("listen") }; opened = true
             if app.warm == nil { app.warm = app.spawn() }   // her brain loads while you talk
             if Prefs.bool("greet"), let clip = app.greetingClip(["ack"]) {   // "Yes, J?" (echo-cancelled: she doesn't hear herself)
                 let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]; try? p.run(); ack = p
@@ -7553,7 +7577,7 @@ final class WakeListener {
         if !rest.isEmpty { app.js("words", rest) }
         settle?.cancel()
         let go = DispatchWorkItem { [weak self] in self?.act() }; settle = go
-        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 6 : 0.6), execute: go)   // act 0.6 s after you stop; nothing said in 6 s: close
+        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 6 : 0.45), execute: go)   // act 0.45 s after you stop; nothing said in 6 s: close
     }
     private func act() {
         let said = rest; stop()
@@ -7565,7 +7589,7 @@ final class WakeListener {
         settle?.cancel(); settle = nil
         task?.cancel(); task = nil; request?.endAudio(); request = nil
         if let e = engine { e.inputNode.removeTap(onBus: 0); e.stop(); try? e.inputNode.setVoiceProcessingEnabled(false); engine = nil }
-        woke = false; rest = ""; opened = false
+        woke = false; rest = ""; opened = false; early?.cancel(); early = nil
     }
 }
 let wake = WakeListener()
