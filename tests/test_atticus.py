@@ -1256,6 +1256,7 @@ print(json.dumps({{'type':'message_end','message':{{'role':'assistant','content'
         with patch.multiple(atticus, **{name: unittest.mock.DEFAULT for name in
                             ['start_ai', 'licensed', 'ping', 'fast', 'remember_turn', 'say', 'front', 'stop_claude', 'allow_focus']}) as mocks, \
              patch.object(atticus.threading, 'Thread') as threads, patch.object(atticus.os, 'setpgrp'), \
+             patch.object(atticus, 'follow_up', return_value=''), \
              patch.object(atticus.signal, 'signal'), patch('sys.argv', ['atticus.py', '--wait']), \
              patch('sys.stdin', io.StringIO('Notes\topen Notes\n')), patch.dict(os.environ, {'ATTICUS_COMMIT': ''}):
             # Even without a CLI, --wait must read the request instead of treating its flag as a question.

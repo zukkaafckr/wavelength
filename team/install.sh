@@ -99,6 +99,7 @@ write_plist() {  # $1 = python, $2 = server script
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.zuka.voice</string>
+<key>ProcessType</key><string>Interactive</string>
 <key>ProgramArguments</key><array><string>$1</string><string>-I</string><string>$2</string></array>
 <key>EnvironmentVariables</key><dict><key>ATTICUS_VOICE_IDLE_MIN</key><string>0</string><key>TQDM_DISABLE</key><string>1</string><key>PYTHONWARNINGS</key><string>ignore</string></dict>
 <key>RunAtLoad</key><true/>

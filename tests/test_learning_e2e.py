@@ -36,6 +36,7 @@ class Ask(unittest.TestCase):
                   patch.object(atticus, 'MEMORY', str(self.root / 'memory.md')), patch.object(atticus, 'LAST', str(self.root / 'last_app')),
                   patch.dict(os.environ, {'ATTICUS_ASK': str(self.root), 'ATTICUS_FRONT': 'Other Fixture', 'ATTICUS_FOCUS_GUARD': '1'}, clear=True),
                   patch.object(atticus.threading, 'Thread', NoThread), patch.object(atticus.subprocess, 'run', self.shell),
+                  patch.object(atticus, 'follow_up', lambda *a: ''), patch.object(atticus, 'local_chat', lambda *a: None),
                   patch.multiple(atticus, show=self.show, place_many=self.place, place=lambda *a: 'placed', installed_apps=lambda: set(APPS), proc_of=lambda a: a,
                                  app_id=lambda a: 'com.example.' + str(a).lower().replace(' ', ''), app_running=lambda bid: True,
                                  free_focus=lambda *a, **k: None, preview_commands=lambda *a, **k: None, preview_app=lambda *a, **k: None,

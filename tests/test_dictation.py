@@ -190,6 +190,9 @@ struct AppRef: Equatable {}
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: AppRef? }
 final class Harness {
     var dictateSelectionPending = false, dictateCleanup = false, busy = true, dictating = true
+    var dictateWhisper = false, whisperDelivered = true
+    func whisperDiscard() {}
+    func whisperTranscribe(apple: String) {}
     var dictateID = 1, text = "Exact words.", inserted: [String] = [], dictateBefore = "Notes before the cursor."
     var dictateFellBack = false, dictateTimedOut = false, dictateSelectionRetried = false
     var dictationTargetApp: AppRef?
@@ -493,7 +496,7 @@ final class Target {
     }
 }
 final class Harness {
-    var dictateSelection: Target?, busy = false, dictating = true, dictateID = 1, dictateCleanup = false
+    var dictateSelection: Target?, busy = false, dictating = true, dictateID = 1, dictateCleanup = false, dictateWhisper = false
     var dictationAppName = "App", lastDictation: String?
     func saveDictation(_ value: String, appName: String) -> Bool { if saves { saved.append(value) }; return saves }
     var log: [String] = [], hides: [Double] = [], words: [String] = []

@@ -542,6 +542,17 @@ def _players():
     return [a for a in ('Music', 'Spotify') if zc._run(['pgrep', '-x', a], 3).returncode == 0]
 
 
+def _playing():
+    """The Music/Spotify app whose player state is playing right now, or None."""
+    for a in _players():
+        try:
+            if zc._osa(f'tell application "{a}" to return (player state as text)', 5).lower().startswith('play'):
+                return a
+        except Exception:
+            continue
+    return None
+
+
 def _player():
     """The Music/Spotify app that is playing (else any running one), or None."""
     run = _players()
@@ -559,7 +570,10 @@ _NOW = re.compile(r"^(?:what is|what) (?:is )?(?:playing|this song|this track|th
                   r"^who (?:sings|is singing|s singing|sang|is the artist(?: of)?|made|is playing) (?:this|that)(?: song| track)?$|^who (?:is )?this (?:artist|singer|by)$|^what(?: is|s)? the (?:current )?(?:song|track) (?:playing|name)$|^what(?: is|s)? the (?:song|track) (?:name )?playing$")
 _SHUFFLE = re.compile(r"^(?:turn|switch|set|put)(?: (?:on|off))? (?:the )?shuffle(?: (?:on|off))?$|^shuffle(?: (?:on|off))?$|^(?:enable|disable) shuffle$|^(?:shuffle|mix up) (?:my |the |this )?(?:music|songs|playlist|library|tracks)$|^(?:stop|no more) shuffl(?:e|ing)$|^(?:turn|switch) (?:on|off) shuffle$")
 _REPEAT = re.compile(r"^(?:repeat|loop) (?:this |the current )?(?:song|track)(?: (?:on|off))?$|^(?:turn|switch|set)(?: (?:on|off))? (?:song |track )?repeat(?: (?:on|off))?$|^(?:stop|disable) repeating(?: this| the)?(?: song| track)?$|^repeat (?:on|off)$|^(?:turn|switch) (?:on|off) repeat$")
-_LIKE = re.compile(r"^(?:like|love|favou?rite|heart|add to favou?rites) (?:this|the current|that)(?: song| track)?$")
+_LIKE = re.compile(r"^(?:like|love|favou?rite|heart|save|add to favou?rites) (?:this|the current|that|it)(?: song| track| one| video)?(?: to (?:my )?(?:favou?rites|library|liked(?: songs| videos)?|playlist))?$|"
+                   r"^add (?:this|that|it)(?: song| track| one| video)? to (?:my |the )?(?:favou?rites|library|liked(?: songs| videos)?|(?:\w+ )?playlist)$")
+_SIMILAR = re.compile(r"^(?:play |put on |give me |queue )?(?:some |a few )?(?:(?:more|other|similar)(?: (?:songs?|music|tracks|stuff|ones?))?|songs?|music|tracks|stuff|ones?) (?:like|similar to) (?:this|that|it)(?: song| one| track)?$|"
+                      r"^(?:play |put on |give me )?(?:some |a few )?(?:more )?similar (?:songs?|music|tracks|stuff|ones?)$|^more like (?:this|that)$")
 _MUSIC_VOL = re.compile(r"^(?:turn|make|put|bring|crank)(?: the)? music (?P<d>up|down|louder|quieter|softer)$|^music (?P<d2>up|down|louder|quieter)$|^(?:turn|make) (?:the )?(?:song|songs|track) (?P<d3>up|down|louder|quieter)$")
 _APPLE_PL = re.compile(r"^(?:play|put on|start|queue up|start playing|play me)(?: my| the| a)?(?: playlist)?(?: called| named)? (?P<p>.+?)(?: playlist)? (?:in|on|using|from|with|through) (?:my )?(?:the )?(?:apple music|music app|the music app|music)$|^(?:apple music|music app)(?: play| start| put on)(?: my| the)?(?: playlist)? (?P<p2>.+?)(?: playlist)?$")
 
@@ -589,11 +603,13 @@ def _media(s, raw):
         else:
             zc._osa(f'tell application "Spotify" to set repeating to {"true" if on else "false"}')
         return f"{'Repeating this song' if on else 'Repeat off'}{_c()}."
+    if _SIMILAR.match(s):
+        return _similar()
     if _LIKE.match(s):
         if 'Music' in _players():
             zc._osa('tell application "Music" to set favorited of current track to true')
             return f"Added it to your favorites{_c()}."
-        return None
+        return None if _players() else _yt_like()   # Spotify has no like in AppleScript; no app running = the YouTube tab
     m = _APPLE_PL.match(s)
     if m:
         name = (m.group('p') or m.group('p2') or '').strip()
@@ -605,6 +621,37 @@ def _media(s, raw):
             return f"I couldn't find a playlist called {name} in Apple Music{_c()}."
         return f"Playing {r} in Apple Music{_c()}."
     return None
+
+
+def _similar():
+    """'play more like this': Music -> more by the current artist from the library; YouTube (Music) -> '<title> mix'."""
+    a = _playing()
+    if a == 'Music':
+        r = zc._osa('tell application "Music"\nset a to artist of current track\nset i to database ID of current track\n'
+                    'set r to (every track of library playlist 1 whose artist is a and database ID is not i)\n'
+                    'if (count of r) = 0 then return "none"\nplay (some item of r)\nreturn a\nend tell', 15)
+        return f"I couldn't find more by that artist in your library{_c()}." if r in ('none', '') else f"Playing more by {r}{_c()}."
+    if a:
+        return None   # Spotify can't search from AppleScript
+    host, title = _yt_exec(_YT_WHAT)
+    if not host or not title:
+        return None
+    title = re.sub(r"\s+", ' ', title).strip()
+    import atticus
+    return f"Playing a mix like {title}{_c()}." if atticus.youtube_play(f"{title} mix", music='music.youtube.com' in host) else None
+
+
+_YT_LIKE = ("(function(){var r=document.querySelector('ytmusic-like-button-renderer');if(r&&r.getAttribute('like-status')==='LIKE')return 'already';"
+            "var b=document.querySelector('ytmusic-like-button-renderer #button-shape-like button,ytmusic-like-button-renderer .like,like-button-view-model button,#segmented-like-button button,ytd-toggle-button-renderer#like-button button');"
+            "if(!b)return 'none';if(b.getAttribute('aria-pressed')==='true')return 'already';b.click();return 'liked'})()")
+
+
+def _yt_like():
+    host, out = _yt_exec(_YT_LIKE)
+    if not host:
+        return None
+    music = 'music.' in host
+    return f"You'd already liked it{_c()}." if out == 'already' else f"Liked it on {'YouTube Music' if music else 'YouTube'}{_c()}. It's saved to your liked {'songs' if music else 'videos'}."
 
 
 def _now_playing(s):
@@ -1678,8 +1725,79 @@ def _extras(s, raw):
     return None
 
 
+# ---------------------------------------------------------------- screen time + "summarize my day" (Screen Time db and Zuka's own log; all on this Mac)
+_SCREEN = re.compile(r"^(?:(?:what is|whats|show|check|tell me|give me|read) )?(?:my )?screen ?time(?: (?:today|so far|for today))?$|"
+                     r"^how (?:long|much time|many hours|many minutes) (?:was i|have i been|did i spend|have i spent|am i|did i use|have i used|did i (?:stay|stayed))(?: (?:on|in|using|at))? (?P<app>[a-z0-9 ]+?)(?: today| so far)?$")
+_DAYSUM = re.compile(r"^(?:summari[sz]e|recap|sum up|wrap up) (?:my |the )?(?:day|today)(?: so far)?$|^what did i (?:do|get done|work on|finish|achieve)(?: so far)?(?: today)?$|"
+                     r"^(?:how was|how s) my day(?: so far)?$|^(?:my )?day (?:summary|recap|so far)$|^what have i (?:done|been doing)(?: today| so far)?$")
+_TASK_SAY = {'clickup check': 'ClickUp checks', 'music': 'music', 'messages': 'messages', 'reminders': 'reminders', 'start day': 'starting your day', 'edit mode': 'editing',
+             'weather': 'weather', 'calendar': 'your calendar', 'time': 'the time', 'open app': 'opening apps', 'close apps': 'closing apps', 'volume/system': 'Mac settings'}
+_SITES = {'instagram', 'youtube', 'facebook', 'twitter', 'x', 'linkedin', 'reddit', 'netflix', 'gmail', 'chatgpt', 'whatsapp web', 'tiktok', 'amazon'}
+
+
+def _list_say(xs):
+    return xs[0] if len(xs) == 1 else ', '.join(xs[:-1]) + ' and ' + xs[-1]
+
+
+def _hm(secs):
+    h, m = divmod(int(secs) // 60, 60)
+    return ' '.join(x for x in (f"{h} hour{'s' if h != 1 else ''}" if h else '', f"{m} minute{'s' if m != 1 else ''}" if m else '') if x) or 'under a minute'
+
+
+def _top_apps(per, n=3):
+    import zuka_learn as zl
+    return [(zl.app_name(b) or b.split('.')[-1].title(), v) for b, v in sorted(per.items(), key=lambda x: -x[1])[:n] if v >= 60]
+
+
+def _screen_time(s):
+    import zuka_learn as zl
+    m = _SCREEN.match(s)
+    if not m:
+        return None
+    per, ok = zl.usage_today()
+    if not ok:
+        return f"I can't read Screen Time on this Mac{_c()}. {zc.NAME()} needs Full Disk Access for that."
+    total = sum(per.values())
+    if total < 60:
+        return f"I don't see any app usage for today yet{_c()}."
+    app = (m.groupdict().get('app') or '').strip()
+    if app and app not in ('my mac', 'mac', 'the mac', 'my computer', 'computer', 'my laptop', 'laptop', 'my phone'):
+        words = [w for w in app.split() if w not in ('the', 'my', 'app')]
+        hit = sum(v for b, v in per.items() if words and all(w in ((zl.app_name(b) or '') + ' ' + b).lower() for w in words))
+        if hit >= 60:
+            return f"You've spent {_hm(hit)} on {app.title()} today{_c()}."
+        if app in _SITES:   # Screen Time lists apps, not websites: the browser is the closest honest answer
+            br = sorted(((v, zl.app_name(b) or b) for b, v in per.items() if b.lower() in zl.BROWSER_BUNDLES), reverse=True)
+            return (f"Screen Time only tracks apps, not sites{_c()}. {br[0][1]} was open for {_hm(br[0][0])} today." if br and br[0][0] >= 60 else
+                    f"Screen Time only tracks apps, not sites{_c()}, and I don't see a browser in today's usage.")
+        return f"I don't see {app} in today's usage{_c()}."
+    top = _top_apps(per)
+    return f"Your screen time today is {_hm(total)}{_c()}. Top apps: {_list_say([f'{n}, {_hm(v)}' for n, v in top])}."
+
+
+def _day_summary(s):
+    import zuka_learn as zl
+    if not _DAYSUM.match(s):
+        return None
+    tasks = [(t, k) for t, k in zl.today_tasks() if not _DAYSUM.match(zc._norm(t))]
+    per, ok = zl.usage_today()
+    bits = []
+    if tasks:
+        cnt = {}
+        for _, k in tasks: cnt[k] = cnt.get(k, 0) + 1
+        top = [_TASK_SAY[k] for k, _ in sorted(((k, c) for k, c in cnt.items() if k), key=lambda x: -x[1])[:3]]
+        bits.append(f"Today you've asked me {len(tasks)} thing{'s' if len(tasks) != 1 else ''}" + (f", mostly {_list_say(top)}" if top else '') + f"{_c()}.")
+    total = sum(per.values())
+    if ok and total >= 60:
+        top = [f"{n}" for n, _ in _top_apps(per)]
+        bits.append(f"You've been on your Mac for {_hm(total)}, mostly in {_list_say(top)}.")
+    return ' '.join(bits) or f"I don't have anything logged for today yet{_c()}."
+
+
 # ---------------------------------------------------------------- entry
 _MATCHERS = (
+    lambda s, raw: _screen_time(s),
+    lambda s, raw: _day_summary(s),
     lambda s, raw: _what_can_you_do() if _CAN_DO.match(s) else None,
     lambda s, raw: _apps_and_windows(s),
     lambda s, raw: _system(s),
@@ -1702,6 +1820,65 @@ _MATCHERS = (
 )
 
 
+# ---- YouTube / YouTube Music as the player (when Apple Music or Spotify isn't running)
+_YT_CMDS = [
+    (re.compile(r"^(?:pause|stop|hold)(?: the| this)? (?:music|song|track|video|youtube)$|^pause(?: it| youtube)?$|^stop it$"), "pause",
+     "(function(){var v=document.querySelector('video');if(!v)return 'none';v.pause();return 'ok'})()", "Paused{c}."),
+    (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this)? (?:music|song|track|video|youtube)$|^(?:resume|unpause|play it|continue playing)$"), "play",
+     "(function(){var v=document.querySelector('video');if(!v)return 'none';v.play();return 'ok'})()", "Playing{c}."),
+    (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track|video)$|^skip(?: this| it)?$|^next(?: one)?$|^play (?:the )?next (?:song|one|video)$"), "next",
+     "(function(){var b=document.querySelector('.next-button, .ytp-next-button');if(b){b.click();return 'ok'}return 'none'})()", "Next one{c}."),
+    (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track|video)$|^play the previous (?:song|track|video)$|^(?:previous|go back|previous one|last one)$"), "previous",
+     "(function(){var b=document.querySelector('.previous-button, .ytp-prev-button');var v=document.querySelector('video');if(b&&b.offsetParent){b.click();return 'ok'}if(v){v.currentTime=0;return 'ok'}return 'none'})()", "Going back{c}."),
+    (re.compile(r"^(?:no )?(?:play (?:it|this|that|the song|the video) again|replay(?: it| this| the song| the video)?|restart (?:the |this )?(?:song|video|track)|start (?:it |the song |this )?(?:over|from the (?:start|beginning))|again)$"), "replay",
+     "(function(){var v=document.querySelector('video');if(!v)return 'none';v.currentTime=0;v.play();return 'ok'})()", "From the top{c}."),
+    (re.compile(r"^(?:what(?:s| is) (?:this song|playing|this)|which song is (?:this|playing)|what song is (?:this|playing))$"), "what",
+     "(function(){var t=document.querySelector('.title.ytmusic-player-bar, h1.ytd-watch-metadata, #title h1');return t?t.innerText.trim():document.title.replace(/ - YouTube( Music)?$/,'')})()", None),
+]
+
+
+_YT_WHAT = next(js for _, k, js, _ in _YT_CMDS if k == 'what')
+_APP_KINDS = {'next': 'next track', 'previous': 'previous track', 'replay': None}   # skip / back / again on Music or Spotify (AppleScript)
+
+
+def _yt_exec(js):
+    """(host, out) from the first YouTube tab that answers js; (None, None) when there is no tab or no browser."""
+    b = zc._workflow()['browser']
+    for host in ('music.youtube.com', 'youtube.com/watch', 'youtube.com'):
+        try: out = zc._tab_exec(b, host, js)
+        except Exception: continue
+        if out == 'NOBROWSER': return None, None
+        if out not in ('NOTAB', 'none', '', None): return host, out
+    return None, None
+
+
+def _app_ctl(kind, a):
+    if kind == 'replay':
+        zc._osa(f'tell application "{a}" to set player position to 0', 6)
+        zc._osa(f'tell application "{a}" to play', 6)
+    else:
+        zc._osa(f'tell application "{a}" to {_APP_KINDS[kind]}', 8)
+
+
+def _youtube_player(s, raw=''):
+    for rx, kind, js, reply in _YT_CMDS:
+        if not rx.match(s): continue
+        apps = bool(_players())
+        if apps and kind not in _APP_KINDS and kind != 'what': return None   # a music app is running: its own controls answer
+        a = _playing() if apps and kind in _APP_KINDS else None
+        if a:   # skip / back / replay: the app that is playing
+            _app_ctl(kind, a)
+            return reply.format(c=zc.call_suffix())
+        host, out = _yt_exec(js)
+        if host:
+            return f"That's {out}{zc.call_suffix()}." if kind == 'what' else reply.format(c=zc.call_suffix())
+        if apps and kind in _APP_KINDS and _player():   # nothing playing and no YouTube tab: still drive the open app
+            _app_ctl(kind, _player())
+            return reply.format(c=zc.call_suffix())
+        return None
+    return None
+
+
 def handle(t, raw=''):
     """A short spoken reply, or None when this isn't something the Mac can do for free (or it isn't sure)."""
     try:
@@ -1712,7 +1889,7 @@ def handle(t, raw=''):
         s = _tidy(t)
         if not s:
             return None
-        for fn in _MATCHERS:
+        for fn in [_youtube_player] + list(_MATCHERS):
             r = fn(s, raw)
             if r:
                 return r

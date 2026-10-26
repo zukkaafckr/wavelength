@@ -143,7 +143,7 @@ class SettingsPageTests(unittest.TestCase):
         retired = re.findall(r'"(\w+)"', source[source.index('static let retiredKeys'):source.index(']', source.index('static let retiredKeys'))])
         self.assertIn('workIn', retired)
         defaults = source[source.index('static let defaults'):source.index('static let retiredKeys')]
-        self.assertIn('"quietAudio": false', defaults)
+        self.assertIn('"quietAudio": true', defaults)   # Zuka: the music dips while she listens
         self.assertNotIn('retiredKeys.filter', source)
         for key in retired:
             with self.subTest(key=key):

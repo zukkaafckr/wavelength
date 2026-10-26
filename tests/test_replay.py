@@ -18,6 +18,7 @@ class ReplayTests(unittest.TestCase):
         for p in [patch.object(atticus,'SKILLS',str(self.root/'skills.json')),
                   patch.object(atticus,'RECENT',str(self.root/'recent.jsonl')),
                   patch.object(atticus,'WORKED',str(self.root/'worked.json')),patch.object(atticus,'ME_FILE',str(self.root/'me.json')),
+                  patch.object(atticus,'follow_up',lambda *a:''),patch.object(atticus,'local_chat',lambda *a:None),
                   patch.dict(os.environ,{'ATTICUS_ASK':str(self.root),'ATTICUS_FRONT':'Other Fixture','ATTICUS_FOCUS_GUARD':'1'},clear=True)]:
             p.start();self.addCleanup(p.stop)
         self.commands=['open -a Fixture','peekaboo menu click --app "com.atticus.fixture" --path "Fixture > Start meeting" --no-remote',

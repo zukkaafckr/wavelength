@@ -59,7 +59,7 @@ if CommandLine.arguments.contains("--saved") {
     precondition(!Prefs.bool("tips") && Prefs.bool("speak") && Prefs.str("routing") == "capable", "visible choices changed")
 } else {
     precondition(Prefs.str("workIn") == "back" && Prefs.bool("askMe") && Prefs.num("aheadDelay") == 0.45, "new user missed defaults")
-    precondition(!Prefs.bool("quietAudio") && Prefs.bool("selection") && Prefs.bool("learn") && Prefs.bool("dictateLearn"), "new hidden defaults are wrong")
+    precondition(Prefs.bool("quietAudio") && Prefs.bool("selection") && Prefs.bool("learn") && Prefs.bool("dictateLearn"), "new hidden defaults are wrong")
 }
 """
         with tempfile.TemporaryDirectory() as root:

@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class BackgroundSendNativeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not (os.environ.get("ATTICUS_VM") or os.environ.get("ATTICUS_ALLOW_HOST_UI")):
+            # Drives real apps and posts real key events: VM only. Skip before the multi-minute -O build of the whole app.
+            raise unittest.SkipTest("host guard: runs only in the VM (run.sh)")
         cls.temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temp.cleanup)
         cls.root = Path(cls.temp.name)

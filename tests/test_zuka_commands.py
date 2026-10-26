@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import os
 import sys
 import tempfile
@@ -128,6 +129,8 @@ class Base(unittest.TestCase):
             pp.start(); self.addCleanup(pp.stop)
         po = mock.patch.object(z, 'OFFER_FILE', str(Path(self.tmp.name) / 'offer.json'))
         po.start(); self.addCleanup(po.stop)
+        ia = mock.patch.object(z, '_installed_app', return_value=None)   # these tests: no tools installed as apps (browser path)
+        ia.start(); self.addCleanup(ia.stop)
         for name, f in (('PENDING', 'pending.json'), ('SHUTDOWN_FILE', 'shutdown.json')):   # each test starts with no half-given reminder or shutdown offer
             pp = mock.patch.object(z, name, str(Path(self.tmp.name) / f))
             pp.start(); self.addCleanup(pp.stop)
@@ -558,6 +561,8 @@ class EverydayBasics(Base):
         self.assertIsNone(z.handle('define serendipity'))
 
     def test_currency(self):
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, True)
+        envp = mock.patch.dict(os.environ, {'ATTICUS_DIR': tmp}); envp.start(); self.addCleanup(envp.stop)   # rates are cached 6 h under ATTICUS_DIR
         with mock.patch.object(z, '_get_json', return_value={'result': 'success', 'rates': {'INR': 84.12, 'USD': 1}}) as g:
             self.assertEqual(z.handle('convert 100 usd to inr'), '100 US dollars is about 8,412 rupees, J.')
             self.assertIn('/latest/USD', g.call_args[0][0])
@@ -565,7 +570,9 @@ class EverydayBasics(Base):
             self.assertIn('4,206 rupees', z.handle('how much is 50 dollars in rupees'))
             self.assertIsNone(z.handle('convert 100 usd to usd'))
             self.assertIsNone(z.handle('convert 100 usd to bitcoin'))
-        self.assertIsNone(z.handle('convert 100 usd to inr'))
+            self.assertEqual(g.call_count, 1)   # served from the cache
+        os.remove(os.path.join(tmp, 'fx-rates.json'))
+        self.assertIsNone(z.handle('convert 100 usd to inr'))   # offline, nothing cached
 
     def test_volume(self):
         with mock.patch.object(z, '_osa', return_value='50') as o:
@@ -705,9 +712,9 @@ class Inbox(Base):
         self.assertNotIn('F', out.split('Latest')[0])
 
     def test_whatsapp_gmail_parse(self):
-        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'unread': True}, {'name': 'Paras', 'unread': True}, {'name': 'HOA Team', 'unread': True}, {'name': 'X', 'unread': False}]),
-                         'WhatsApp: 3 chats unread: Mom, Paras, and HOA Team.')
-        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'unread': True}]), 'WhatsApp: 1 chat unread: Mom.')
+        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'snippet': 'call me', 'time': '9:05', 'unread': True}, {'name': 'X', 'snippet': 'hi', 'time': 'Yesterday', 'unread': False}]),
+                         "Latest on WhatsApp, 1 unread in all: Mom, 'call me', at 9:05; X, 'hi', yesterday.")
+        self.assertEqual(z._fmt_whatsapp([{'name': 'X', 'snippet': 'hi', 'me': True}]), 'Nothing new on WhatsApp, J.')
         self.assertEqual(z._fmt_gmail([{'name': 'Riya', 'subject': 'batch brief'}, {'name': 'ClickUp', 'subject': ''}]),
                          'Gmail: 2 unread: Riya, about batch brief; ClickUp.')
         self.assertEqual(z._fmt_gmail([]), 'Nothing unread in your Gmail, J.')
@@ -838,3 +845,17 @@ class EndOfDay(unittest.TestCase):
         with open(z.SHUTDOWN_FILE, 'w') as f: json.dump({'at': time.time() - 600}, f)
         self.assertIsNone(z.handle('yes'))
         self.assertFalse(any('to shut down' in s for s in self.osa))
+
+
+class InstalledAppsFirst(unittest.TestCase):
+    def test_installed_app_beats_the_website(self):
+        runs = []
+        with mock.patch.object(z, '_installed_app', side_effect=lambda k, l='': 'Slack' if k == 'slack' else None), \
+             mock.patch.object(z, '_run', lambda a, t=10: runs.append(a) or mock.Mock(returncode=0, stdout='', stderr='')), \
+             mock.patch.object(z, '_focus_or_open', lambda h, u: runs.append(['web', u]) or True), \
+             mock.patch.object(z, '_workflow', return_value={**z.DEFAULTS, 'browser': 'Brave Browser',
+                               'tools': {'slack': ['Slack', 'https://slack.com'], 'gmail': ['Gmail', 'https://mail.google.com']}}):
+            self.assertEqual(z._open_tool('slack'), "Slack's up.")
+            self.assertEqual(runs[-1], ['open', '-a', 'Slack'])   # the app, never a tab
+            z._open_tool('gmail')
+            self.assertEqual(runs[-1], ['web', 'https://mail.google.com'])   # no app installed: the website

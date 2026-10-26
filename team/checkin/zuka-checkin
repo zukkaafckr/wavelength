@@ -58,6 +58,33 @@ def busy():
         return False
 
 
+def learn_script():
+    """zuka_learn.py: next to this script, or in ~/.atticus (generic: nothing personal here)."""
+    for d in (os.path.dirname(os.path.realpath(__file__)), f"{HOME}/.atticus"):
+        p = os.path.join(d, "zuka_learn.py")
+        if os.path.exists(p): return p
+    return None
+
+
+def learn_daily():
+    """First check-in of the day: refresh what is learned from this person's routine (once a day, low priority, in the background)."""
+    p = learn_script()
+    if p:
+        try: subprocess.Popen(["/usr/bin/nice", "-n", "15", sys.executable, p, "--daily"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError: pass
+
+
+def suggestion():
+    """A proactive line from this person's habits (at most 3 a day, none during calls), or None."""
+    p = learn_script()
+    if not p: return None
+    try:
+        out = subprocess.run([sys.executable, p, "--suggest"], capture_output=True, text=True, timeout=20).stdout.strip()
+        return out or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def main():
     part = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in LINES else "morning"
     s = settings()
@@ -65,11 +92,12 @@ def main():
     user = str(s.get("userCallName") or "there")
     if s.get("paused") is True:
         return
+    learn_daily()
     if idle_secs() > AWAY_SECS:
         return   # away: no check-in, and nothing left in the chat to reply to
     if busy():
         return   # already talking: never talk over itself or you
-    line = random.choice(LINES[part]).replace("{user}", user)
+    line = suggestion() or random.choice(LINES[part]).replace("{user}", user)
     try:   # the assistant shows the last few turns to the model, so a reply to this lands in context
         with open(RECENT, "a") as f:
             f.write(json.dumps({"t": time.time(), "q": f"({name} checked in)", "a": line}) + "\n")

@@ -1561,12 +1561,12 @@ def youtube_tab(url):
     return not subprocess.run(['open', '-a', b, url], capture_output=True).returncode   # scripting refused: still their browser, never the web app
 
 
-def youtube_play(query):
+def youtube_play(query, music=False):
     """Zuka: the first YouTube result for the words, opened in the browser to play. Free and instant: one page fetch, no AI."""
     if not query:   # nothing named: their usual music (workflow.json "music"), so it just plays
         import zuka_commands
         query = (zuka_commands._workflow().get('music') or 'top hits mix').strip()
-        said = youtube_play(query)
+        said = youtube_play(query, music)
         return said and said + ' Say "play" and a name for something else.'
     url = 'https://www.youtube.com/results?search_query=' + urllib.parse.quote_plus(query)
     cache = os.path.join(DIR, 'youtube-cache.json'); key = ' '.join(query.lower().split())
@@ -1574,23 +1574,23 @@ def youtube_play(query):
         with open(cache) as f: known = json.load(f)
     except (OSError, ValueError): known = {}
     if isinstance(known.get(key), str) and re.fullmatch(r'[\w-]{11}', known[key]):   # Zuka: a song played before starts at once, no page fetch
-        target = f'https://www.youtube.com/watch?v={known[key]}'
+        target = f'https://music.youtube.com/watch?v={known[key]}' if music else f'https://www.youtube.com/watch?v={known[key]}'
         if youtube_tab(target):
             fast.cmds = [f'open {shlex.quote(target)}']
-            return f'Playing {query} on YouTube.'
+            return f'Playing {query} on YouTube' + (' Music.' if music else '.')
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh)', 'Accept-Language': 'en'})
         vid = re.search(r'"videoId":"([\w-]{11})"', urllib.request.urlopen(req, timeout=6).read().decode('utf-8', 'ignore'))
     except (OSError, ValueError):
         vid = None   # offline or blocked: show the search instead
-    target = f'https://www.youtube.com/watch?v={vid[1]}' if vid else url
+    target = (f'https://music.youtube.com/watch?v={vid[1]}' if music else f'https://www.youtube.com/watch?v={vid[1]}') if vid else url   # Zuka: "on YouTube Music" plays it there
     if vid:
         known[key] = vid[1]
         try: private_json(cache, dict(list(known.items())[-300:]))
         except OSError: pass
     if not youtube_tab(target): return None
     fast.cmds = [f'open {shlex.quote(target)}']
-    return f'Playing {query} on YouTube.' if vid else f'Here is YouTube for {query}.'
+    return f'Playing {query} on YouTube' + (' Music.' if music else '.') if vid else f'Here is YouTube for {query}.'
 
 
 def play(name, anything=True):
@@ -1819,6 +1819,9 @@ def plain(text):
 # Learned shortcuts: an action the AI got right is saved as the exact commands it ran; the same words later replay
 # them after confirmation with no AI (free). Kept in a file, never sent to the AI, so they cost nothing as they grow.
 SKILLS = os.path.join(DIR, 'skills.json')
+_CLOSER_WORDS = set("""no nope nah not now no-thanks thanks thank thankyou you ok okay alright all right cool great fine good nice perfect
+    yeah yes yep sure i'm im am i that's thats that is all it for done nothing else bye goodbye good night later see ya stop
+    never mind nevermind cancel just leave it we're were we are it's its fine awesome got hmm um uh oh so then""".split())
 DEICTIC = re.compile(r'\b(this|that|these|those|it|here|there|them|him|her)\b')   # "close this" depends on the moment: never learned
 INTERNAL_TASK_MARKERS = ('\nAlready completed:', '\nRemaining words:')
 
@@ -2216,6 +2219,14 @@ def fast(text):
         import zuka_commands
         said = zuka_commands.handle(t)
         if said: return said
+    m = re.fullmatch(r'(?:set |create |make |add )(?:me )?(?:an |my |a )?(?:new )?alarm (?:for|at) (.+)|wake me(?: up)? (?:at|by|for) (.+)', t)
+    if m and os.environ.get('ATTICUS_LIVE') != '1':   # Zuka: an alarm is a timed reminder with a sound (Reminders alerts the Mac)
+        return fast(f'remind me to wake up at {m[1] or m[2]}')
+    m = re.fullmatch(r'(?:get |give me |show me |show )?(?:directions|route|a route) (?:to|for) (.+)|(?:navigate|take me|how do i get) to (.+)|(?:find|show|where is|where s) (?:the )?(?:nearest|closest|nearby) (.+)', t)
+    if m and os.environ.get('ATTICUS_LIVE') != '1':   # Zuka: directions open in Maps (free); it never drives for you
+        dest = (m[1] or m[2] or ('nearest ' + m[3])).strip()
+        show('https://maps.apple.com/?' + urllib.parse.urlencode({'daddr' if m[3] is None else 'q': dest}))
+        return f'Opened Maps for {dest}, {call_name()}.' if call_name() else f'Opened Maps for {dest}.'
     chat = small_talk(t)   # Zuka: greetings and thanks never cost Claude; a command after them still runs
     if chat:
         greet, rest = chat
@@ -2237,6 +2248,9 @@ def fast(text):
                 'I do not have a verified procedure for that yet. Complete the task successfully first so I can save it.')
     if t in ('no', 'yes', 'ok', 'okay', 'nevermind', 'never mind', 'cancel', 'nothing', 'thanks', 'thank you'):
         return None if os.environ.get('ATTICUS_LIVE') == '1' else 'Okay.'   # stray word after a turn: no AI call; mid-sentence it starts the next words ("No, when I say …")
+    closer = re.sub(r"[^a-z' ]", ' ', t).split()
+    if closer and len(closer) <= 8 and all(w in _CLOSER_WORDS for w in closer) and os.environ.get('ATTICUS_LIVE') != '1':
+        return 'Okay.' if not {'bye', 'goodbye', 'night', 'later'} & set(closer) else 'Okay. Bye, ' + pref('userCallName', 'J') + '.'   # "no thanks, thank you", "that's all", "I'm good": ends the conversation, no AI call
     m = re.fullmatch(r'(?:close|quit) (.+)', t)
     app = app_named(m[1]) if m and not DEICTIC.search(m[1]) else None
     if app:
@@ -2276,10 +2290,11 @@ def fast(text):
         return f'Searched {query}' + (f' on {site[1]}.' if site else '.')
     music = re.sub(r'\b(?:just|please|for me|can you|could you|would you|will you|kindly|quickly|now)\b', ' ', t)
     music = ' '.join(music.split())
-    m = re.search(r'\bplay (?:me )?(?:the song |song |the video |video )?(.+?)(?: (?:on|in|from) youtube)?$', music) if 'youtube' in music else None
+    on_music = bool(re.search(r'\byoutube music\b', music))
+    m = re.search(r'\bplay (?:me )?(?:the song |song |the video |video )?(.+?)(?: (?:on|in|from) youtube(?: music)?)?$', music) if 'youtube' in music else None
     if m or re.fullmatch(r'(?:open |go to )?youtube(?: and)? (?:play|put on|start)(?: (?:a|some|any|me a|me some))? ?(?:song|songs|music|video|something)?', music):
         what = m[1] if m else ''   # Zuka: anything with "youtube" and "play" is free and instant, no AI, however it's worded
-        return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a|me some)? ?(?:song|songs|music|video|something|anything|a song)?', what) else what)
+        return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a|me some)? ?(?:song|songs|music|video|something|anything|a song)?', what) else what, music=on_music)
     if re.fullmatch(r'(?:play|put on|start) (?:a |some |any |me a |me some )?(?:song|songs|music|something)(?: for me)?', music):
         return youtube_play(None)   # Zuka: "play a song" plays something now (free); "play X" names it
     m = re.fullmatch(r'play (?:my |the )?(?:spotify )?(?:playlist )?(?:called |named )?(.+?)( playlist)?( on spotify)?', t)
@@ -3603,6 +3618,42 @@ def limits_line():
 def ask_share(usd):
     """Zuka: one ask's usual share of the 5-hour session, in plain words."""
     return {'a tiny': 'well under 1%', 'a small': 'under 1%', 'a medium': 'about 1%'}.get(plan_size(usd), 'a few percent')
+
+
+_FOLLOW = [   # (what was asked or answered, a natural next step) — the first match wins; replies that already ask keep theirs
+    (r"\b(?:play|playing|song|music|youtube)\b", ["Want a different vibe after this one?", "Say next if you want to skip.", "Want me to queue something else after this?"]),
+    (r"\bweather|temperature|rain\b", ["Want tomorrow's forecast too?", "Need anything else before you head out?"]),
+    (r"\b(?:what time|the time|what day|date)\b", ["Need a reminder for anything?", "Anything on your plate I can set a reminder for?"]),
+    (r"\b(?:remind|reminder|timer|alarm)\b", ["Anything else to remember?", "Want another one?"]),
+    (r"\b(?:opened|open|launch|close|closed|quit)\b", ["What's next?", "Want me to open anything else?"]),
+    (r"\b(?:battery|storage|wi-?fi|volume|brightness|dark mode)\b", ["Anything else on the Mac?", "Want me to tweak anything else?"]),
+    (r"\b(?:convert|percent|plus|minus|times|divided|kilometers|miles)\b", ["Got another one?", "Anything else to work out?"]),
+]
+_ANYTHING = ["Anything else{c}?", "What else can I do{c}?", "Need anything else{c}?", "Anything else on your mind{c}?"]
+
+
+def local_chat(text):
+    """Free on-device brain (zuka_chat): a short spoken reply for casual/general talk, or None to carry on to Claude."""
+    try:
+        import zuka_chat
+        return zuka_chat.answer(text) if zuka_chat.chatty(text) else None
+    except Exception:
+        return None
+
+
+def follow_up(task, reply):
+    import random
+    """Zuka: one short, natural next step after a free answer (never when the reply already asks something,
+    never for a cancelled/failed step, and only when conversation mode is on)."""
+    r = (reply or '').strip()
+    if not pref('converse', True) or not r or r.endswith('?') or r.startswith(('The user said no.', 'Okay, no', 'Okay.')) or len(r) > 260:
+        return ''
+    c = call_name(); c = f", {c}" if c else ''
+    text = f"{task} {r}".lower()
+    for rx, options in _FOLLOW:
+        if re.search(rx, text):
+            return ' ' + random.choice(options)
+    return ' ' + random.choice(_ANYTHING).format(c=c)
 
 
 def online():
@@ -7756,11 +7807,22 @@ def main():
         if quick_cancelled: end_turn('cancelled', emit=False)
         elif quick_failed: end_turn('failed', emit=False)
         remember_turn(task, quick, getattr(fast, 'shortcut', None))
+        quick = quick + follow_up(task, quick)   # Zuka: a conversation, not a command line: she suggests the next step, then listens
         said = say('!' if quick.startswith('The user said no.') else '✓', quick)   # Zuka: the answer first (the box speaks it now)
         log_turn(task, quick, t, model='instant',
                  path='shortcut' if getattr(fast, 'shortcut', None) else 'instant', attempt_usd=[])
         if reading_started: reading.join()   # then let the window read finish: the summary cannot recreate its scratch file after a fast exit
         return said
+    if not quick and not marked and not done and pref('localChat', True) and not os.environ.get('ATTICUS_AGENT') and os.environ.get('ATTICUS_LIVE') != '1':
+        local = local_chat(remaining if remaining is not None else task)   # Zuka: casual/general talk is answered on this Mac, free, no card
+        if local:
+            if warm: stop_claude(warm)
+            remember_turn(task, local)
+            local = local + follow_up(task, local)
+            said = say('✓', local)
+            log_turn(task, local, t, model='local', path='local-ai', attempt_usd=[])
+            if reading_started: reading.join()
+            return said
     if pref('usageCheck', False) and not online():   # Zuka offline: free commands already ran above; say so instead of failing
         if warm: stop_claude(warm)
         end_turn('cancelled', emit=False)

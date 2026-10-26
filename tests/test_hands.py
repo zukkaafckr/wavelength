@@ -22,7 +22,8 @@ class HandsTests(unittest.TestCase):
         self.root = tempfile.TemporaryDirectory(); self.addCleanup(self.root.cleanup)
         Path(self.root.name, 'hands.json').write_text('{}')
         for p in [patch.object(atticus, 'DIR', self.root.name), patch.object(atticus, 'wait_commit', return_value=True),
-                  patch.object(atticus, 'pref', side_effect=lambda k,d:d), patch.dict(os.environ, {'ATTICUS_ASK':self.root.name}, clear=True)]:
+                  patch.object(atticus, 'pref', side_effect=lambda k,d:d), patch.object(atticus, 'local_chat', return_value=None),
+                  patch.object(atticus, 'follow_up', return_value=''), patch.dict(os.environ, {'ATTICUS_ASK':self.root.name}, clear=True)]:
             p.start(); self.addCleanup(p.stop)
 
     def result(self, args, labels, risky=True, secure=False):
@@ -434,6 +435,8 @@ print("Clicked Export")
 
     def test_slow_summary_adds_at_most_four_tenths_before_model_start(self):
         finished, capture_finished = threading.Event(), threading.Event()
+        probe = time.monotonic(); threading.Event().wait(.3)
+        slack = max(0, time.monotonic() - probe - .3)   # timer lateness of this host (large under taskpolicy -b); the bound is about our own waits
         def slow_summary(*_):
             finished.wait(1)
             return {'app':'Fixture','window':'Window','text':'late'}
@@ -456,11 +459,11 @@ print("Clicked Export")
              patch('sys.argv',['atticus.py','answer an unrelated fact']), patch.dict(os.environ,{'ATTICUS_UI':'1'}):
             atticus.main()
         finished.set(); capture_finished.set()
-        self.assertLess(started[0], .55)
+        self.assertLess(started[0], .55 + slack)
         self.assertNotIn('Screen capture unavailable', prompts[0])
         row = atticus.read_rows(str(Path(self.root.name, 'log.jsonl')))[0]
         summary = next(s for s in row['step_times'] if s['label'] == 'Reading front-window summary')
-        self.assertLessEqual(summary['added_before_model'], .41)
+        self.assertLessEqual(summary['added_before_model'], .41 + slack)
         print(f"FRONT SUMMARY ADDED BEFORE MODEL: {summary['added_before_model']:.3f}s", flush=True)
 
     def test_fast_path_waits_for_window_summary_before_scratch_cleanup(self):

@@ -26,7 +26,7 @@ APP=~/Applications/Atticus.app   # in Applications so System Settings can list i
 BUNDLE_ID=com.atticus.app; SOURCE=$(pwd)
 if [ -n "$PACKAGE" ]; then APP="$PACKAGE/Wavelength.app"; BUNDLE_ID=com.wavelength.app; SOURCE=""; rm -rf "$APP"; fi   # a package has no source folder to update from
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
-cp atticus.py zuka_commands.py zuka_more.py "$APP/Contents/Resources/"
+cp atticus.py zuka_*.py "$APP/Contents/Resources/"   # every zuka_*.py module, so a new one is never left out
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
 cp ui/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<P
@@ -84,6 +84,7 @@ cat > "$AGENT" <<P
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.atticus.app</string>
+<key>ProcessType</key><string>Interactive</string>
 <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Atticus</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>

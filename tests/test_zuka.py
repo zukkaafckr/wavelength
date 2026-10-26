@@ -90,6 +90,7 @@ class NativeTests(unittest.TestCase):
         self.assertIn('let long = Date().timeIntervalSince(lastLongGreeting) > 3600', start)
         self.assertIn('greetingClip(long ? [dayPart()] : ["ack"])', start)
         self.assertIn('all.count > 1 ? all.filter { $0 != last } : all', start)
+        self.assertIn('guard long || (Prefs.bool("echoCancel") && !WakeListener.bluetoothMic()) else { return start(dictate: false) }', start)   # no ack clip to wait through on the plain mic
 
     def test_login_and_unlock_hello_without_the_mic(self):
         welcome = SWIFT[SWIFT.index('    func welcome(after s: Double)'):SWIFT.index('    func start() {   // Zuka')]
@@ -118,7 +119,7 @@ class NativeTests(unittest.TestCase):
         self.assertIn('let replying = drawingReply || !askFile.isEmpty', SWIFT)   # talking with a card up answers it
         self.assertIn("const ok = $('thread').querySelector('.ok:not(.gone):not(.offer)');", UI)
         self.assertIn('if let then { then() }', SWIFT)   # the mic opens after she finishes asking
-        self.assertIn('Prefs.bool("converse"), a.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")', SWIFT)   # and after any question she asks
+        self.assertIn('else if Prefs.bool("converse"), !self.busy, !self.engine.isRunning, self.panel.isVisible', SWIFT)   # and after every answer: a conversation
 
     def test_go_ahead_covers_the_whole_task(self):
         src = (ROOT / 'atticus.py').read_text()
@@ -154,7 +155,7 @@ class NativeTests(unittest.TestCase):
 
     def test_youtube_play_is_free_and_instant(self):
         played = []
-        with patch.object(atticus, 'youtube_play', lambda q: played.append(q) or 'ok'), patch.object(atticus, 'play', lambda n, anything=True: None):
+        with patch.object(atticus, 'youtube_play', lambda q, music=False: played.append(q) or 'ok'), patch.object(atticus, 'play', lambda n, anything=True: None):
             for said, want in (('Just open YouTube for me and play a song.', None), ('open youtube and play arijit singh', 'arijit singh'),
                                ('play kesariya on youtube', 'kesariya'), ('play a song', None), ('play some music', None),
                                ('play believer', 'believer'), ('can you play tum hi ho please', 'tum hi ho')):
@@ -162,6 +163,10 @@ class NativeTests(unittest.TestCase):
         with patch('zuka_commands._workflow', return_value={'music': 'lofi mix'}), patch.object(atticus, 'youtube_tab', return_value=True), \
              patch('urllib.request.urlopen', side_effect=OSError):
             self.assertIn('lofi mix', atticus.youtube_play(None))   # nothing named: their usual music, it just plays
+
+    def test_build_ships_every_zuka_module(self):
+        build = (ROOT / 'build.sh').read_text()
+        self.assertIn('cp atticus.py zuka_*.py "$APP/Contents/Resources/"', build)   # a new zuka_*.py module can't be left out of the app
 
     def test_apps_open_by_any_whole_word_of_their_name(self):
         apps = {'Brave Browser', 'Uninstall Adobe Premiere Pro 2026', 'Adobe Premiere Pro 2025', 'Adobe Premiere Pro 2026', 'Adobe Media Encoder 2026', 'Notes', 'Final Cut Pro', 'Logic Pro'}

@@ -344,6 +344,31 @@ def _open_re(tools):
     return re.compile(r"^open (up )?(my |the )?(" + '|'.join(re.escape(k) for k in sorted(tools, key=len, reverse=True)) + r")( tab| site| page| app| website)?$")
 
 
+def _asks_health(t):
+    """Long ways of asking whether she's working ("I want to check if you can access the Mac and everything is right",
+    "just checking everything is okay") -> the real local check (internet, voice, Claude sign-in)."""
+    if not 6 <= len(t.split()) <= 25 or re.search(r"\b(?:website|site|page|code|video|project|file|email|order|payment|account)\b", t):
+        return False
+    asks = re.search(r"\b(?:check(?:ing)?|test(?:ing)?|make sure|see if|is|are|everything|all)\b", t)
+    state = re.search(r"\b(?:ok|okay|alright|all right|working|right|fine|set ?up|good|access(?: the mac)?|hear me|there)\b", t)
+    about = re.search(r"\b(?:you|everything|all|it|this|that|mac|zuka|setup|set up)\b", t)
+    return bool(asks and state and about and re.search(r"\b(?:everything|you|zuka|mac|setup|set up|this|that|it)\b.*\b(?:ok|okay|alright|working|right|fine|set ?up|good|access)\b", t))
+
+
+def _asks_inbox(t):
+    """Any natural way of asking whether there are messages ("do you have any messages", "did anyone message me",
+    "got any texts", "check my messages please") — but never a request to write or send one."""
+    t = re.sub(r"^(?:(?:hey|ok|okay|so|um|uh|please|can you|could you|would you|will you|just|zuka|and)\s+)+", "", t)
+    if re.search(r"\b(?:send|write|reply|text (?:him|her|them)|message (?:him|her|them)|tell|say|draft|compose|forward|delete)\b", t):
+        return False
+    noun = r"(?:messages?|texts?|mails?|e-?mails?|dms?|whatsapps?|notifications?|inbox)"
+    if re.search(r"\b(?:the|this|that|these|those)\s+" + noun + r"\b", t):   # one specific message ("who was the email from") is not the inbox summary
+        return False
+    return bool(re.search(r"\b(?:any|anything|new|unread|check|got|have|did|someone|anyone|who|what|which|read)\b.*\b" + noun + r"\b", t)
+                or re.search(r"\bdid (?:anyone|someone|somebody) (?:message|text|mail|email|write to|call) me\b", t)
+                or re.fullmatch(r"(?:my )?" + noun + r"(?: please)?", t))
+
+
 _UNREAD = re.compile(r"^(any(thing)? new( messages| mail| emails?)?|(do i have )?any (new |unread )?(messages|mail|emails?|whatsapps?)( for me)?|"
                      r"(check|read) (my )?(whatsapp|gmail|mail|emails?|messages|inbox)( messages| unread)?|unread( messages| mail| emails?)?|"
                      r"how many (unread|new)( messages| mails?| emails?)?( do i have)?|whats new|new (messages|mail|emails?))$")
@@ -371,7 +396,10 @@ def _start_day():
     bits = []
     for s in sd['sites']:
         label, url = _site_ref(w, s)
-        if url:
+        app = _installed_app(s if isinstance(s, str) else '', label)
+        if app:   # installed as an app: the app, not a tab
+            _open_installed(app); bits.append(label)
+        elif url:
             _open_browser(url)
             bits.append(label)
     folder = _newest_task_folder() if sd['openTaskFolder'] else None
@@ -464,8 +492,38 @@ def _new_task(m):
     return f"Done. Task {batch}, {_unsplit(name)}, is ready in {base.name}."
 
 
+# Tools that are installed as Mac apps open as the app, never a browser tab ("Drive" = the Google Drive app's folder)
+_TOOL_APPS = {'slack': 'Slack', 'chatgpt': 'ChatGPT', 'discord': 'Discord', 'spotify': 'Spotify', 'clickup': 'ClickUp',
+              'drive': 'Google Drive', 'notion': 'Notion', 'zoom': 'zoom.us', 'teams': 'Microsoft Teams', 'whatsapp': 'WhatsApp',
+              'telegram': 'Telegram', 'figma': 'Figma', 'canva': 'Canva', 'capcut': 'CapCut', 'claude': 'Claude'}
+
+
+def _installed_app(key, label=''):
+    """The installed Mac app for this tool, or None (then the website is used)."""
+    name = _TOOL_APPS.get(key) or _TOOL_APPS.get((label or '').lower())
+    if not name: return None
+    for d in ('/Applications', os.path.expanduser('~/Applications'), '/System/Applications'):
+        if os.path.isdir(os.path.join(d, name + '.app')): return name
+    return None
+
+
+def _open_installed(app):
+    if app == 'Google Drive':   # Drive for desktop: open the synced Drive folder in Finder
+        base = os.path.expanduser('~/Library/CloudStorage')
+        try: drv = sorted(d for d in os.listdir(base) if d.startswith('GoogleDrive'))
+        except OSError: drv = []
+        if drv:
+            mine = os.path.join(base, drv[0], 'My Drive')
+            _run(['open', mine if os.path.isdir(mine) else os.path.join(base, drv[0])], 10); return True
+    return _run(['open', '-a', app], 10).returncode == 0
+
+
 def _open_tool(key):
-    label, url = _workflow()['tools'][key]
+    label, url = _workflow()['tools'].get(key, (_TOOL_APPS.get(key, key.title()), ''))
+    app = _installed_app(key, label)
+    if app:
+        return f"{label}'s up." if _open_installed(app) else f"I couldn't open {label}, {CALL()}."
+    if not url: return None
     host = re.sub(r'^https?://', '', url).split('/')[0]
     ok = _focus_or_open(host, url)
     return f"{label}'s up." if ok else f"I couldn't open {label}, {CALL()}."
@@ -475,6 +533,13 @@ def _unread():
     try:
         info = _parse_titles(_browser_titles())
         reply = _unread_reply(info)
+        try:
+            import zuka_apps
+            extra = zuka_apps.badge_sentence()
+            if extra:
+                reply += ' ' + extra
+        except Exception:
+            pass
         offer = [k for k, v in (('whatsapp', info['whatsapp']), ('gmail', sum(n for _, n in info['gmail']))) if v]
         if offer:
             _set_offer(offer)
@@ -963,6 +1028,9 @@ def _time_reply(t):
 # ---- weather
 _WEATHER = re.compile(r"^(?:(?:hows|whats|what is|how is|tell me|give me|check) (?:the )?)?(?:weather|forecast)(?: like)?(?: (?:today|right now|now|outside|out there|currently))?"
                       r"(?: (?:in|for|at) (?P<city>[a-z][a-z ]*?))?(?: (?:today|right now|now))?$")
+_TMRW = re.compile(r"^(?:(?:hows|whats|what is|how is|tell me|give me|check) )?(?:the )?(?:weather|forecast)(?: like)?(?: for)? tomorrow(?: (?:in|for|at) (?P<city>[a-z][a-z ]*?))?$|"
+                   r"^(?:(?:whats|what is|how is|hows) )?tomorrow s? ?(?:weather|forecast)(?: (?:in|for|at) (?P<city2>[a-z][a-z ]*?))?$|^tomorrow(?: s)? weather$")
+_TMRW_RAIN = re.compile(r"^(?:(?:is it|will it|is it going to|is it gonna|going to|do you think it will|do you think it ll) )(?:rain|raining|be raining|be rainy|be wet)(?: tomorrow| tomorrow morning| tomorrow evening)$|^(?:will|is) tomorrow (?:be )?(?:rainy|wet|raining)$|^(?:will it|is it going to) rain tomorrow$")
 _RAIN = re.compile(r"^(?:is it going to|is it gonna|will it|is it|going to|is it gonna) rain(?:ing)?(?: today| right now| now| later| outside)?$")
 _TEMP = re.compile(r"^(?:whats )?(?:the )?temperature(?: outside| out there| right now| today| now)?$|^how (?:hot|cold|warm) is it(?: outside| right now| today)?$")
 _WX = re.compile(r"^(?P<c>.+?)\s+(?P<t>[+-]?\d+)\s*°C\s+feels\s+(?P<f>[+-]?\d+)\s*°C,\s*(?P<p>[\d.]+)\s*mm rain", re.I)
@@ -990,6 +1058,25 @@ def _weather(kind, city=None):
     if kind == 'temp':
         return f"It's {_deg(tt)} outside, {CALL()}. Feels like {_deg(ff)}."
     return f"{place} it's {cond}, {_deg(tt)}, feels like {_deg(ff)}." + (f" There's some rain, {mm:g} millimetres." if mm > 0 else '')
+
+
+def _tomorrow(kind, city=None):
+    """Tomorrow's forecast from wttr.in (free, no key): high/low, the day's look, the best chance of rain."""
+    d = _get_json('https://wttr.in/' + (urllib.parse.quote(city) if city else '') + '?format=j1')
+    try:
+        day = d['weather'][1]
+        hi, lo = int(day['maxtempC']), int(day['mintempC'])
+        hours = day['hourly']
+        cond = hours[min(4, len(hours) - 1)]['weatherDesc'][0]['value'].strip().lower()   # the noon slot
+        chance = max(int(h.get('chanceofrain') or 0) for h in hours)
+    except Exception:
+        return f"I can't reach the forecast right now, {CALL()}."
+    where = f" in {city.title()}" if city else ''
+    if kind == 'rain':
+        return (f"Probably, {CALL()}. {chance} percent chance of rain tomorrow{where}, {cond}." if chance >= 50 else
+                f"Maybe a shower, {CALL()}. {chance} percent chance of rain tomorrow{where}." if chance >= 25 else
+                f"Unlikely, {CALL()}. Only {chance} percent chance of rain tomorrow{where}, {cond}.")
+    return f"Tomorrow{where} it'll be {cond}, {_deg(lo)} to {_deg(hi)}" + (f", with a {chance} percent chance of rain" if chance >= 20 else '') + f", {CALL()}."
 
 
 # ---- quick facts (Wikipedia) and definitions
@@ -1059,29 +1146,66 @@ def _define(t):
 
 
 # ---- currency
-_CUR = {'dollar': 'USD', 'dollars': 'USD', 'usd': 'USD', 'us dollar': 'USD', 'us dollars': 'USD', 'bucks': 'USD',
+_CUR = {'dollar': 'USD', 'dollars': 'USD', 'usd': 'USD', 'us dollar': 'USD', 'us dollars': 'USD', 'bucks': 'USD', 'american dollars': 'USD',
         'rupee': 'INR', 'rupees': 'INR', 'inr': 'INR', 'indian rupee': 'INR', 'indian rupees': 'INR',
-        'euro': 'EUR', 'euros': 'EUR', 'eur': 'EUR', 'pound': 'GBP', 'pounds': 'GBP', 'gbp': 'GBP',
+        'euro': 'EUR', 'euros': 'EUR', 'eur': 'EUR', 'pound': 'GBP', 'pounds': 'GBP', 'gbp': 'GBP', 'sterling': 'GBP',
         'british pound': 'GBP', 'british pounds': 'GBP', 'dirham': 'AED', 'dirhams': 'AED', 'aed': 'AED',
-        'yen': 'JPY', 'jpy': 'JPY'}
+        'yen': 'JPY', 'jpy': 'JPY', 'canadian dollar': 'CAD', 'canadian dollars': 'CAD', 'cad': 'CAD',
+        'australian dollar': 'AUD', 'australian dollars': 'AUD', 'aud': 'AUD', 'singapore dollar': 'SGD', 'singapore dollars': 'SGD', 'sgd': 'SGD',
+        'franc': 'CHF', 'francs': 'CHF', 'swiss franc': 'CHF', 'swiss francs': 'CHF', 'chf': 'CHF', 'yuan': 'CNY', 'rmb': 'CNY', 'cny': 'CNY',
+        'riyal': 'SAR', 'riyals': 'SAR', 'saudi riyal': 'SAR', 'saudi riyals': 'SAR', 'sar': 'SAR', 'baht': 'THB', 'thb': 'THB',
+        'ringgit': 'MYR', 'myr': 'MYR', 'won': 'KRW', 'krw': 'KRW', 'taka': 'BDT', 'bdt': 'BDT', 'rand': 'ZAR', 'zar': 'ZAR'}
 _CUR_NAME = {'USD': ('US dollar', 'US dollars'), 'INR': ('rupee', 'rupees'), 'EUR': ('euro', 'euros'),
-             'GBP': ('pound', 'pounds'), 'AED': ('dirham', 'dirhams'), 'JPY': ('yen', 'yen')}
-_CURRENCY = re.compile(r"^(?:(?:please )?convert |how much is |what is |whats |how many )?(?P<n>\d+(?:\.\d+)?) (?P<a>[a-z]+(?: [a-z]+)?) (?:to|in|into) (?P<b>[a-z]+(?: [a-z]+)?)$")
+             'GBP': ('pound', 'pounds'), 'AED': ('dirham', 'dirhams'), 'JPY': ('yen', 'yen'), 'CAD': ('Canadian dollar', 'Canadian dollars'),
+             'AUD': ('Australian dollar', 'Australian dollars'), 'SGD': ('Singapore dollar', 'Singapore dollars'), 'CHF': ('Swiss franc', 'Swiss francs'),
+             'CNY': ('yuan', 'yuan'), 'SAR': ('Saudi riyal', 'Saudi riyals'), 'THB': ('baht', 'baht'), 'MYR': ('ringgit', 'ringgit'),
+             'KRW': ('won', 'won'), 'BDT': ('taka', 'taka'), 'ZAR': ('rand', 'rand')}
+_CURRENCY = re.compile(r"^(?:(?:please )?convert |how much is |what is |whats |how many |what s )?(?P<n>\d+(?:\.\d+)?) (?P<a>[a-z]+(?: [a-z]+)?) (?:to|in|into) (?P<b>[a-z]+(?: [a-z]+)?)$|"
+                       r"^(?:please )?convert (?P<a2>[a-z]+(?: [a-z]+)?) (?:to|into) (?P<b2>[a-z]+(?: [a-z]+)?)$|"
+                       r"^(?:(?:what is|whats|what s|check) )?(?:the )?(?P<a3>[a-z]+(?: [a-z]+)?) (?:to|in) (?P<b3>[a-z]+(?: [a-z]+)?)(?: (?:exchange )?rate)$|"
+                       r"^(?:(?:what is|whats|what s) )?(?:the )?(?:(?:exchange )?rate|price) of (?P<a4>[a-z]+(?: [a-z]+)?) (?:in|to) (?P<b4>[a-z]+(?: [a-z]+)?)$")
+FX_TTL = 6 * 3600
+
+
+def _fx_rates(base):
+    """{code: rate} for 1 base, from open.er-api.com (free, no key). Cached 6 h under ATTICUS_DIR; None when offline with no fresh cache."""
+    path = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'fx-rates.json')
+    try:
+        with open(path) as f: cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    if not isinstance(cache, dict): cache = {}
+    c = cache.get(base)
+    if isinstance(c, dict) and time.time() - c.get('at', 0) < FX_TTL and isinstance(c.get('rates'), dict):
+        return c['rates']
+    d = _get_json('https://open.er-api.com/v6/latest/' + base)
+    try:
+        rates = {k: float(v) for k, v in d['rates'].items()}
+    except Exception:
+        return None
+    cache[base] = {'at': time.time(), 'rates': rates}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f: json.dump(cache, f)
+    except OSError: pass
+    return rates
 
 
 def _currency(raw):
     m = _CURRENCY.match(_clean(raw))
     if not m:
         return None
-    a, b = _CUR.get(m.group('a')), _CUR.get(m.group('b'))
+    g = m.groupdict()
+    a, b = (g.get('a') or g.get('a2') or g.get('a3') or g.get('a4')), (g.get('b') or g.get('b2') or g.get('b3') or g.get('b4'))
+    a, b = _CUR.get(a), _CUR.get(b)
     if not a or not b or a == b:
         return None
-    d = _get_json('https://open.er-api.com/v6/latest/' + a)
+    rates = _fx_rates(a)
     try:
-        rate = float(d['rates'][b])
+        rate = float(rates[b])
     except Exception:
         return None
-    n = float(m.group('n'))
+    n = float(g['n']) if g.get('n') else 1.0
     out = n * rate
     one = lambda c, v: _CUR_NAME[c][0] if abs(v - 1) < 1e-9 else _CUR_NAME[c][1]
     res = _fmt_num(out, 0 if out >= 100 else 2)
@@ -1176,6 +1300,8 @@ def _as_str(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+REMINDERS = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'reminders.json')   # the reminders Zuka made (id, task, when): only these can be cancelled by voice
+_CANCEL_REM = re.compile(r"^(?:cancel|delete|remove|clear|forget|scrap|drop)(?: (?:all|every|my|the|that|this|last|latest|previous|recent|newest|one|a|reminder))*? ?reminders?(?: i just (?:made|set|gave))?$")
 PENDING = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'pending.json')   # a half-given reminder waiting for its missing part (90 s)
 _WHEN = r"(?:tomorrow|today|tonight|(?:tomorrow |today |tonight )?at \d{1,2}(?:[: ]?\d{2})? ?(?:am|pm|a m|p m)?(?: tomorrow| today| tonight)?|in (?:\d+|an?|half an?|a couple of) [a-z ]+?)"
 
@@ -1192,6 +1318,43 @@ def _pending(new=None, clear=False):
         return d if time.time() - d.get('at', 0) <= 90 else None
     except (OSError, ValueError):
         return None
+
+
+def _rem_log(new=None, items=None):
+    try:
+        with open(REMINDERS) as f: cur = json.load(f)
+    except (OSError, ValueError):
+        cur = []
+    if not isinstance(cur, list): cur = []
+    if new: cur.append(new)
+    if items is not None: cur = items
+    if new or items is not None:
+        try:
+            os.makedirs(os.path.dirname(REMINDERS), exist_ok=True)
+            with open(REMINDERS, 'w') as f: json.dump(cur[-30:], f)
+        except OSError: pass
+    return cur
+
+
+def _cancel_remind(t):
+    """'cancel my reminder' = the latest one Zuka set; 'cancel all reminders' = every one it set that is still waiting."""
+    p = _pending()
+    if p and p.get('kind') == 'remind':
+        _pending(clear=True)
+        return f"Okay, I dropped the half-made reminder{call_suffix()}."
+    allr = bool(re.search(r"\b(?:all|every)\b", t)) or t.endswith('reminders') and not re.search(r"\b(?:last|latest|previous|recent|newest|that|this|the)\b", t)
+    logged = [r for r in _rem_log() if isinstance(r, dict) and r.get('id')]
+    if not logged:
+        return f"I haven't set any reminders you could cancel, {CALL()}."
+    gone, keep = [], list(logged)
+    for r in (logged[::-1] if allr else logged[-1:]):
+        try: _osa('tell application "Reminders" to delete (first reminder whose id is %s)' % _as_str(r['id']), 15)
+        except Exception: pass   # already done or removed by hand: just drop it from the list
+        gone.append(r); keep.remove(r)
+    _rem_log(items=keep)
+    names = [r.get('task') or 'a reminder' for r in gone]
+    return (f"Cancelled {len(gone)} reminders: {', '.join(names[:3])}{' and more' if len(names) > 3 else ''}{call_suffix()}." if len(gone) > 1 else
+            f"Cancelled your reminder {names[0] if names[0].startswith(('about ', 'of ')) else 'to ' + names[0]}{call_suffix()}.")
 
 
 def _remind_words(low):
@@ -1277,10 +1440,11 @@ def _remind(raw):
         return None
     script = ('set d to current date\nset day of d to 1\nset year of d to %d\nset month of d to %d\nset day of d to %d\n'
               'set hours of d to %d\nset minutes of d to %d\nset seconds of d to 0\n'
-              'tell application "Reminders" to make new reminder with properties {name:%s, remind me date:d}'
+              'tell application "Reminders"\nset r to make new reminder with properties {name:%s, remind me date:d}\nreturn id of r\nend tell'
               % (when.year, when.month, when.day, when.hour, when.minute, _as_str(task)))
     try:
-        _osa(script, 20)
+        rid = _osa(script, 20)
+        if rid: _rem_log({'id': rid, 'task': task, 'when': label})
     except Exception:
         return f"I couldn't add that to Reminders, {CALL()}. Allow {NAME()} under Privacy & Security, Reminders."
     return f"Okay, I'll remind you {task if task.startswith(('about ', 'of ')) else 'to ' + task} {label}, {CALL()}."
@@ -1401,6 +1565,8 @@ def _basics(t, raw):
         r = _timer(raw)
         if r:
             return r
+        if _CANCEL_REM.match(t):
+            return _cancel_remind(t)
         if 'remind me' in t:
             return _remind(raw)
         if _SHOT_AREA.match(t):
@@ -1424,6 +1590,11 @@ def _basics(t, raw):
         r = _time_reply(t)
         if r:
             return r
+        m = _TMRW.match(t)
+        if m:
+            return _tomorrow('day', (m.group('city') or m.group('city2') or '').strip() or None)
+        if _TMRW_RAIN.match(t):
+            return _tomorrow('rain')
         m = _WEATHER.match(t)
         if m:
             return _weather('now', (m.group('city') or '').strip() or None)
@@ -1482,7 +1653,8 @@ _LI_JS = ("(function(){var rows=[].slice.call(document.querySelectorAll('li.msg-
 _WA_JS = ("(function(){var ps=document.querySelector('#pane-side');var rows=ps?[].slice.call(ps.querySelectorAll('[role=listitem],[role=row]')):[];"
           "var seen={},items=[];rows.forEach(function(r){var sp=r.querySelectorAll('span[title]');var name=sp[0]?sp[0].getAttribute('title'):'';"
           "if(!name||seen[name])return;seen[name]=1;var un=[].slice.call(r.querySelectorAll('[aria-label]')).some(function(e){return /unread message/i.test(e.getAttribute('aria-label'))});"
-          "items.push({name:name,snippet:sp[1]?sp[1].getAttribute('title'):'',unread:un})});"
+          "var ls=(r.innerText||'').split('\\n').map(function(x){return x.trim()});var tm=ls.filter(function(x){return /^(\\d{1,2}:\\d{2}(\\s?[ap]m)?|yesterday|today|(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?|\\d{1,2}[\\/.-]\\d{1,2}[\\/.-]\\d{2,4})$/i.test(x)})[0]||'';"
+          "items.push({name:name,snippet:sp[1]?sp[1].getAttribute('title'):'',unread:un,time:tm,me:ls.indexOf('(You)')>=0})});"
           "return JSON.stringify({rs:document.readyState,len:(document.body.innerText||'').length,n:items.length,items:items})})()")
 _GM_JS = ("(function(){var rows=[].slice.call(document.querySelectorAll('tr.zE'));"
           "var items=rows.map(function(r){var s=r.querySelector('.yW span[email]');var sub=r.querySelector('.bog');"
@@ -1516,11 +1688,30 @@ def _fmt_linkedin(items):
     return f"On LinkedIn, {len(real)} unread: {_names([i['name'] for i in real])}{tail}.{late}"
 
 
+_EMOJI = re.compile('[\U0001F000-\U0001FFFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200d\u202a-\u202e]')
+
+
+def _wa_clean(s):
+    return re.sub(r'\s+', ' ', _EMOJI.sub('', s or '')).strip()
+
+
+def _wa_when(tm):
+    tm = (tm or '').strip()
+    return '' if not tm else (f"at {tm}" if re.match(r'\d{1,2}:\d{2}', tm) else tm.lower() if tm.lower() in ('yesterday', 'today') else f"on {tm}")
+
+
 def _fmt_whatsapp(items):
-    un = [i['name'] for i in items if i.get('unread')]
-    if not un:
-        return f"Nothing unread on WhatsApp, {CALL()}."
-    return f"WhatsApp: {len(un)} chat{'' if len(un) == 1 else 's'} unread: {_names(un)}."
+    """Up to 5 chats (the list is newest first) whose last message is theirs: name, ~40-char preview, time as shown."""
+    theirs = [i for i in items if not i.get('me')]
+    un = [i for i in theirs if i.get('unread')]
+    if not theirs:
+        return f"Nothing new on WhatsApp, {CALL()}."
+    bits = []
+    for i in theirs[:5]:
+        w = _wa_when(i.get('time'))
+        bits.append(f"{_wa_clean(i['name']) or 'Someone'}, '{_snip(_wa_clean(i.get('snippet')))}'" + (f", {w}" if w else ''))
+    head = f"Latest on WhatsApp, {len(un)} unread in all" if un else "Nothing unread on WhatsApp. Latest chats"
+    return f"{head}: " + '; '.join(bits) + '.'
 
 
 def _fmt_gmail(items):
@@ -1634,8 +1825,8 @@ def handle(t):
     said = _handle(t)
     if said is None:   # the wider set of free Mac commands (zuka_more.py), last, so the commands above win
         try:
-            import zuka_more
-            said = zuka_more.handle(_norm(t), t if isinstance(t, str) else '')
+            import zuka_work, zuka_more
+            said = zuka_work.handle(_norm(t), t if isinstance(t, str) else '') or zuka_more.handle(_norm(t), t if isinstance(t, str) else '')
         except ImportError: pass
         except Exception: said = FAIL.format(call=CALL()) if '{call}' in FAIL else None
     return clean_call(said)
@@ -1645,6 +1836,11 @@ def _handle(t):
     try:
         raw = t if isinstance(t, str) else ''
         t = _norm(t)
+        try:   # learned phrasings -> the phrasing that works; free taste-music requests are played and answered here
+            import zuka_learn
+            t = zuka_learn.alias(t)
+            if t.startswith(zuka_learn.SAID): return t[len(zuka_learn.SAID):]
+        except Exception: pass
         if not t:
             return None
         p = _pending()
@@ -1670,10 +1866,19 @@ def _handle(t):
         m = _open_re(tools).match(t) if tools else None
         if m:
             return _open_tool(m.group(3))
+        try:
+            import zuka_work
+            r = zuka_work.handle_chat(t)   # Slack / Discord are read from the apps themselves
+        except ImportError:
+            r = None
+        if r:
+            return r
         r = _inbox_phrase(t)
         if r:
             return r
-        if _UNREAD.match(t):
+        if _asks_health(t):
+            return _health(True)
+        if _UNREAD.match(t) or _asks_inbox(t):
             return _unread()
         if _VOICE_LIST.match(t):
             return _voice_list()
