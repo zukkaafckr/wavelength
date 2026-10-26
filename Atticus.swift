@@ -2590,22 +2590,42 @@ final class App: NSObject, WKScriptMessageHandler {
         }
     }
 
+    // Zuka greetings: pre-recorded in her voice, so they work offline. Never the same line twice in a row.
     var greeter: Process?
-    func start() {   // Zuka: a fresh talk-shortcut press greets the user by time of day, then listens (after, so the mic never hears her)
+    var lastLongGreeting = Date.distantPast
+    let greetDir = NSHomeDirectory() + "/.local/share/zuka/greetings"
+    func dayPart() -> String {
+        let h = Calendar.current.component(.hour, from: Date())
+        return h >= 5 && h < 12 ? "morning" : h >= 12 && h < 17 ? "afternoon" : h >= 17 && h < 22 ? "evening" : "night"
+    }
+    func greetingClip(_ kinds: [String]) -> String? {
+        let state = greetDir + "/.last", last = (try? String(contentsOfFile: state, encoding: .utf8)) ?? ""
+        let all = ((try? FileManager.default.contentsOfDirectory(atPath: greetDir)) ?? []).filter { f in f.hasSuffix(".wav") && kinds.contains { f.hasPrefix($0 + "-") } }
+        guard let clip = (all.count > 1 ? all.filter { $0 != last } : all).randomElement() else { return nil }
+        try? clip.write(toFile: state, atomically: true, encoding: .utf8)
+        return greetDir + "/" + clip
+    }
+    func welcome(after s: Double) {   // login and unlock: a hello in her voice, no mic; at most once every 10 minutes
+        DispatchQueue.main.asyncAfter(deadline: .now() + s) { [self] in
+            guard Prefs.bool("greet"), !Prefs.bool("paused"), greeter == nil, !engine.isRunning, voice?.isRunning != true,
+                  Date().timeIntervalSince(lastLongGreeting) > 600, let clip = greetingClip(["login", dayPart()]) else { return }
+            lastLongGreeting = Date()
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]; try? p.run()
+        }
+    }
+    func start() {   // Zuka: a fresh talk-shortcut press greets the user (the full time-of-day line after an hour's break, else a quick "Yes?"), then listens
         if let g = greeter {   // pressed during the greeting: never mind (the box's mic button: skip to listening)
             greeter = nil; g.terminate()
             return clickTalk ? start(dictate: false) : close(clear: false)
         }
         guard !clickTalk, !panel.isVisible, !busy, !engine.isRunning, Prefs.bool("greet"),
               Prefs.str("input") != "type", Prefs.str("talkMode") == "toggle" else { return start(dictate: false) }   // hold-to-talk would lose the release
-        let dir = NSHomeDirectory() + "/.local/share/zuka/greetings"
-        let h = Calendar.current.component(.hour, from: Date())
-        let part = h >= 5 && h < 12 ? "morning" : h >= 12 && h < 17 ? "afternoon" : h >= 17 && h < 22 ? "evening" : "night"
-        guard let clip = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter({ $0.hasPrefix(part) && $0.hasSuffix(".wav") }).randomElement()
-        else { return start(dictate: false) }
+        let long = Date().timeIntervalSince(lastLongGreeting) > 3600   // the full greeting only after a break; otherwise a sub-second ack keeps it snappy
+        guard let clip = greetingClip(long ? [dayPart()] : ["ack"]) else { return start(dictate: false) }
+        if long { lastLongGreeting = Date() }
         capsule(true); show()
         let g = gen
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [dir + "/" + clip]
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]
         p.terminationHandler = { [weak self] done in DispatchQueue.main.async {
             guard let self, self.greeter === done else { return }
             self.greeter = nil
@@ -7323,6 +7343,8 @@ var dictateRef: EventHotKeyRef?
 var hotkeyRegistered = false
 var dictateHotkeyRegistered = false
 var specialGlobalHotkeys: Any?, specialLocalHotkeys: Any?, specialMainDown = false, specialDictateDown = false
+DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in app.welcome(after: 1.2) }
+app.welcome(after: 6)   // Zuka: the app starts at login, so this is the login hello (also after a restart, at most every 10 minutes)
 for name in [NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification, NSWorkspace.sessionDidResignActiveNotification] {
     NSWorkspace.shared.notificationCenter.addObserver(forName:name, object:nil, queue:.main) { _ in
         specialMainDown = false; specialDictateDown = false

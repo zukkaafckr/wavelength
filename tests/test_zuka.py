@@ -84,6 +84,20 @@ class NativeTests(unittest.TestCase):
         for part in ('"morning"', '"afternoon"', '"evening"', '"night"'): self.assertIn(part, start)
         self.assertIn('"greet": true', SWIFT)
 
+    def test_quick_ack_unless_an_hour_passed_and_never_the_same_line_twice(self):
+        start = SWIFT[SWIFT.index('    var greeter: Process?'):SWIFT.index('    func startDictation()')]
+        self.assertIn('let long = Date().timeIntervalSince(lastLongGreeting) > 3600', start)
+        self.assertIn('greetingClip(long ? [dayPart()] : ["ack"])', start)
+        self.assertIn('all.count > 1 ? all.filter { $0 != last } : all', start)
+
+    def test_login_and_unlock_hello_without_the_mic(self):
+        welcome = SWIFT[SWIFT.index('    func welcome(after s: Double)'):SWIFT.index('    func start() {   // Zuka')]
+        self.assertIn('Date().timeIntervalSince(lastLongGreeting) > 600', welcome)
+        self.assertIn('greetingClip(["login", dayPart()])', welcome)
+        self.assertNotIn('start(dictate', welcome)   # a hello only: the mic stays off
+        self.assertIn('Notification.Name("com.apple.screenIsUnlocked")', SWIFT)
+        self.assertIn('app.welcome(after: 6)', SWIFT)
+
     def test_greeting_stops_when_she_closes(self):
         # close() bumps gen, so a greeting ending after Esc never opens the mic (checked in the termination handler)
         gone = SWIFT[SWIFT.index('    func gone() {'):SWIFT.index('    func gone() {') + 200]

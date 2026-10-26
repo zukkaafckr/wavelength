@@ -2,20 +2,46 @@
   "morning": [
     "Good morning, {user}. All systems are up. What's first today?",
     "Morning, {user}. Coffee's on you, the rest is on me. Where do we start?",
-    "Good morning, {user}. I'm online and ready when you are."
+    "Good morning, {user}. I'm online and ready when you are.",
+    "Morning, {user}. Fresh day, fresh ideas. Where do we begin?",
+    "Good morning, {user}. Everything's warmed up and waiting on you."
   ],
   "afternoon": [
     "Good afternoon, {user}. What are we working on?",
     "Welcome back, {user}. Shall we pick up where we left off?",
-    "At your service, {user}. What do you need?"
+    "At your service, {user}. What do you need?",
+    "Afternoon, {user}. Ready when you are.",
+    "Hey {user}. Let's keep the momentum going. What's next?"
   ],
   "evening": [
     "Good evening, {user}. Still building? I'm right here.",
     "Evening, {user}. What can I take off your plate?",
-    "Welcome back, {user}. Let's finish strong. What's next?"
+    "Welcome back, {user}. Let's finish strong. What's next?",
+    "Evening, {user}. Let's make this last stretch count.",
+    "Hey {user}. Long day? I've got you. What do you need?"
   ],
   "night": [
     "Burning the midnight oil, {user}? I'm with you. What do you need?",
-    "Still up, {user}? Let's keep it quick. What's the mission?"
+    "Still up, {user}? Let's keep it quick. What's the mission?",
+    "Late one tonight, {user}. What are we finishing?",
+    "Night shift, {user}? I'm wide awake. Go ahead."
+  ],
+  "login": [
+    "Welcome back, {user}. All systems online.",
+    "Hey {user}, good to see you. Ready when you are.",
+    "Welcome back, {user}. I kept everything running while you were away.",
+    "There you are, {user}. Let's get to it.",
+    "Systems up, {user}. Say the word and we start.",
+    "Back in action, {user}. What's the plan today?"
+  ],
+  "ack": [
+    "Yes, {user}?",
+    "Go ahead.",
+    "I'm listening.",
+    "Talk to me.",
+    "What's up?",
+    "Hit me, {user}.",
+    "Ready.",
+    "Yes?"
   ]
 }
