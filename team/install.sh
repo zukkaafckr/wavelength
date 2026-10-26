@@ -11,6 +11,7 @@
 #   DRY_RUN=1     print what would happen, change nothing
 # Never uses sudo. Everything lands in your home folder.
 set -e
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"   # tools installed without Homebrew live in ~/.local/bin
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TEAM="$REPO/team"
 VOICE=0; EXPR=0; RAM=""; OPEN=1; PICK=""; CHECKINS="10:00,14:30,18:30"; DRY="${DRY_RUN:-}"
@@ -92,7 +93,7 @@ write_plist() {  # $1 = python, $2 = server script
 P
 }
 if [ "$VOICE" = 1 ]; then
-  command -v uv >/dev/null || [ -n "$DRY" ] || { echo "The natural voice needs uv. Run: brew install uv   (or see https://docs.astral.sh/uv/ ), then run this again with --voice."; exit 1; }
+  command -v uv >/dev/null || [ -n "$DRY" ] || { echo "The natural voice needs uv. Install it without Homebrew or sudo: curl -LsSf https://astral.sh/uv/install.sh | sh   (or brew install uv), then run this again with --voice."; exit 1; }
   run mkdir -p "$CB/voices" "$KO" "$HOME/.config/atticus"
   run cp "$TEAM/voice/atticus_voice_server.py" "$TEAM/voice/zuka_voice_light.py" "$TEAM/voice/atticus-say" "$CB/"
   run chmod +x "$CB/atticus-say"

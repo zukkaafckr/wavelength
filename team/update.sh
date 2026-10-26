@@ -4,7 +4,7 @@
 #   bash team/update.sh --auto   what the hourly updater runs: only while you are away from the Mac, quietly
 # Every update is tested on a copy first; if a test fails, your current version stays as it is.
 set -e
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 REPO=$(cd "$(dirname "$0")/.." && pwd); cd "$REPO"
 AUTO=0; [ "$1" = "--auto" ] && AUTO=1
 LOG="$HOME/.config/atticus/update.log"; mkdir -p "$(dirname "$LOG")"
