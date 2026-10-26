@@ -517,7 +517,9 @@ let usableReadAloudVoice: String? = {
     p.waitUntilExit()
     return installedReadAloudVoice.flatMap { p.terminationStatus == 0 ? sayVoiceName($0.name, names: names) : nil }
 }()
+let zukaVoice = FileManager.default.isExecutableFile(atPath: NSHomeDirectory() + "/.local/share/chatterbox/atticus-say")
 func readAloudArguments(_ words: String, compactTip: () -> Void) -> [String] {
+    if zukaVoice { return ["--", words] }   // Zuka's own voice: skip the system voice scan (`say -v ?` takes ~20 s on this Mac and froze the first reply)
     guard !UserDefaults.standard.bool(forKey: "siriVoice"), !siriVoiceTrying else { return ["--", words] }
     if usableReadAloudVoice == nil { compactTip() }
     return (usableReadAloudVoice.map { ["-v", $0] } ?? []) + ["--", words]
@@ -1911,7 +1913,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if Prefs.bool("autoCopy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(a, forType: .string) }
         if Prefs.bool("speak") && aloud {
             let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
-            siriVoice()   // retry for next time: this read uses the fallback after a previous Siri test failed
+            if !zukaVoice { siriVoice() }   // retry for next time: this read uses the fallback after a previous Siri test failed
             shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: ({ let h = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"; return FileManager.default.isExecutableFile(atPath: h) ? h : "/usr/bin/say" }())); p.arguments = arguments
             p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
                 guard let self, self.voice === p else { return }; self.voice = nil; self.hide(after: 2)
@@ -2344,12 +2346,20 @@ final class App: NSObject, WKScriptMessageHandler {
         pill(false)
         if let r = escRef { UnregisterEventHotKey(r); escRef = nil }
     }
+    var warmedVoice = false
+    func warmVoice(_ partial: String) {   // Zuka: once the streamed answer has a finished first phrase, her voice pre-records it, so speaking starts at once
+        guard Prefs.bool("speak"), !warmedVoice, partial.count > 12, partial.range(of: #"[.!?,]\s"#, options: .regularExpression) != nil else { return }
+        let helper = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"
+        guard FileManager.default.isExecutableFile(atPath: helper) else { return }
+        warmedVoice = true
+        let p = Process(); p.executableURL = URL(fileURLWithPath: helper); p.arguments = ["--warm", "--", partial]; try? p.run()
+    }
     var capsuleOn = false
     func capsule(_ on: Bool) {   // Zuka: while she listens the box is a small capsule (just her ribbon); it grows back into the box to think and answer
-        guard on != capsuleOn, !pillOn else { return }
-        capsuleOn = on; js("capsule", on)
+        guard !pillOn, on || capsuleOn else { return }
+        if on != capsuleOn { capsuleOn = on; js("capsule", on) }
         let w = CGFloat(on ? 212 : max(340, Prefs.num("boxW")))
-        var f = panel.frame
+        var f = panel.frame; guard f.width != w else { return }   // the real width, not a flag: other steps resize the box too
         if Prefs.str("corner") == "top-right" { f.origin.x = f.maxX - w } else if Prefs.str("corner") == "top-center" { f.origin.x = f.midX - w / 2 }
         f.size.width = w; frame(f)
     }
@@ -2592,8 +2602,11 @@ final class App: NSObject, WKScriptMessageHandler {
 
     // Zuka greetings: pre-recorded in her voice, so they work offline. Never the same line twice in a row.
     var greeter: Process?
-    var lastLongGreeting = Date.distantPast
     let greetDir = NSHomeDirectory() + "/.local/share/zuka/greetings"
+    var lastLongGreeting: Date {   // kept on disk, so an app restart (update, crash) doesn't greet again
+        get { ((try? FileManager.default.attributesOfItem(atPath: greetDir + "/.long"))?[.modificationDate] as? Date) ?? .distantPast }
+        set { FileManager.default.createFile(atPath: greetDir + "/.long", contents: nil); try? FileManager.default.setAttributes([.modificationDate: newValue], ofItemAtPath: greetDir + "/.long") }
+    }
     func dayPart() -> String {
         let h = Calendar.current.component(.hour, from: Date())
         return h >= 5 && h < 12 ? "morning" : h >= 12 && h < 17 ? "afternoon" : h >= 17 && h < 22 ? "evening" : "night"
@@ -2899,7 +2912,7 @@ final class App: NSObject, WKScriptMessageHandler {
         clickTalk = false; toggleTalk = false; quiet?.cancel()
         busy = true
         if dictating { cue("soundRelease"); js("finishing", dictateCleanup ? "Cleaning up…" : "") }
-        else if offerText == nil { capsule(false); js("think") }   // card replies keep the response clock paused
+        else if offerText == nil { capsule(false); warmedVoice = false; js("think") }   // card replies keep the response clock paused
         let an = analyzer, rd = reading, next = nextAnalyzer
         nextReading?.cancel(); nextFeed = nil; nextAnalyzer = nil; nextReading = nil; nextSpeechInputID = nil; nextSpeechSegment = 0
         Task { await next?.cancelAndFinishNow() }
@@ -3292,6 +3305,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 buffer += d
                 while let i = buffer.firstIndex(of: 10) {
                     let line = String(decoding: buffer[..<i], as: UTF8.self); buffer.removeSubrange(...i)
+                    if line.hasPrefix("… ") { self.warmVoice(String(line.dropFirst(2))) }   // Zuka: her first phrase renders while the answer streams
                     if line == "! setup" { onboarding.open(automatic: true); continue }   // Claude not installed, signed out or no plan
                     if line == "! feedback" { Atticus.settings.open(tab:"feedback"); continue }
                     if line == "! improve" { self.js("improve"); continue }   // the one-time "help make Atticus better?" card
@@ -3389,7 +3403,7 @@ final class App: NSObject, WKScriptMessageHandler {
         pointContext = nil; unpoint(false)
         if point != nil { js("point", false) }   // the mark went with this ask (its picture is in the bubble): the chip must not wait for the next one
         drawing.clearInput(); drawing.deselect(); mini.reset(); if !busy && !engine.isRunning { noteHidden() }; busy = true; agentMoveFile = ""; answer = ""; showAgent = ""; try? FileManager.default.removeItem(atPath: focusFile)
-        if !speculative { capsule(false); js("think") }
+        if !speculative { capsule(false); warmedVoice = false; js("think") }
         if let w = warm, !w.p.isRunning { try? w.input.close(); warm = nil }
         if warm != nil && warmSel != selKey { unwarm() }   // spawned before the selection changed
         guard let w = warm ?? spawn() else {
@@ -4854,7 +4868,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         }
         if k == "speechModel" { app.prepareSpeech() }
         if k == "improve" { Prefs.set("improveAsked", true) }   // any answer, here or in setup or the card, is the answer
-        if k == "speak" { if v as? Bool == true { siriVoice() } else { app.shush() } }
+        if k == "speak" { if v as? Bool == true { if !zukaVoice { siriVoice() } } else { app.shush() } }
         if k == "hideWhenSharing" { NSApp.windows.forEach(applySharing) }
         if k == "menuIcon" { bar.item.isVisible = v as? Bool == true }
         if k == "paused" { if v as? Bool == true { meeting.stop(paused: true); app.close(clear: false); agentsUI.stopAll() }; bar.paint() }
@@ -7417,7 +7431,7 @@ var pasteRef: EventHotKeyRef?
 let pasteHotkey = (code: 9, mods: controlKey | cmdKey, flags: NSEvent.ModifierFlags([.control, .command]))
 let pasteHotkeyRegistered = !hotkeysConflict(pasteHotkey, hotkey()) && (Prefs.str("dictateHotkeyLabel").isEmpty || !hotkeysConflict(pasteHotkey, dictateHotkey())) &&
     RegisterEventHotKey(UInt32(pasteHotkey.code), UInt32(pasteHotkey.mods), EventHotKeyID(signature: 0x41545443, id: 7), GetApplicationEventTarget(), 0, &pasteRef) == noErr
-if Prefs.bool("speak") { siriVoice() }
+if Prefs.bool("speak") && !zukaVoice { siriVoice() }   // Zuka speaks with her own voice: no system voice setup at launch
 let settings = SettingsWindow()
 let bar = MenuBar()
 let delegate = Delegate()

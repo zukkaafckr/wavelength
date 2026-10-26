@@ -3358,6 +3358,22 @@ def watch(what, then, app='', words='', mode='', phrase=''):
     notify('Stopped watching after 3 hours.')
 
 
+def money(usd):
+    return '<$0.001' if usd < 0.001 else f'${usd:.3f}' if usd < 0.1 else f'${usd:.2f}'
+
+
+def usual_cost():
+    """Zuka: the median cost of the last 30 Claude asks, so the usage card can say what to expect."""
+    vals = []
+    for r in reversed(read_rows(os.path.join(DIR, 'log.jsonl'))):
+        u = r.get('attempt_usd')
+        if r.get('model') not in (None, 'instant') and isinstance(u, list) and u:
+            vals.append(sum(x for x in u if isinstance(x, (int, float))))
+        if len(vals) >= 30: break
+    vals = sorted(v for v in vals if v > 0)
+    return vals[len(vals) // 2] if vals else 0.002
+
+
 def online():
     """Zuka: can Claude be reached right now? A real 1.2 s connection to its server (a route alone says nothing:
     macOS reports "Reachable" with no internet at all). Unsure counts as online so a request still gets its try."""
@@ -7514,8 +7530,8 @@ def main():
         return say('!', "I'm offline right now, J. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
     if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in the team install's settings; a fresh config (tests) never asks
         # Zuka: past the free instant commands every ask spends the Claude plan, so the user okays it first
-        size = 'a small amount (Haiku)' if routing_mode() == 'cheapest' else 'some (Haiku, more if it escalates)'
-        if ask_user({'q': f'This needs Claude and uses {size} of your plan. Go ahead?', 'cmd': 'Free commands (apps, windows, music, shortcuts) never ask.'}, 60) != 'y':
+        more = '' if routing_mode() == 'cheapest' else ', more if it needs a bigger model'
+        if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'Usually {"under $0.001" if usual_cost() < 0.001 else "about " + money(usual_cost())} of your plan{more}. Free commands never ask.'}, 60) != 'y':
             if warm: stop_claude(warm)
             end_turn('cancelled', emit=False)
             log_turn(task, 'Skipped before using Claude.', t, model='instant', path='instant', attempt_usd=[])
@@ -7684,6 +7700,9 @@ def main():
     receipt = memory_receipt(remembered)   # remembered or forgot something: one row under the answer that opens Settings → Memory there
     if receipt and os.environ.get('ATTICUS_UI') == '1':
         print('✎ ' + json.dumps(receipt, ensure_ascii=False), flush=True)
+    if pref('usageCheck', False) and os.environ.get('ATTICUS_UI') == '1':   # Zuka: what this answer actually used, under it
+        used = sum(x for x in attempt_usd or [] if isinstance(x, (int, float))) or (cost if isinstance(cost, (int, float)) else 0)
+        if used: print(f'$ {money(used)} used', flush=True)
     # "When I say focus mode, …" saved: a green Learned pill
     said = shortcut or learned_say   # a new shortcut, named or learned from these words
     tip(reply, f'Learned: Say “{said}” any time.' if said else 'Learned: Procedure saved for next time.' if workflow else taught[1].strip() if taught else '')

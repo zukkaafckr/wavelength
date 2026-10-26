@@ -45,6 +45,13 @@ def sentences(text):
                 out[-1] = out[-1] + " " + p
             else:
                 out.append(p)
+    if out and len(out[0]) > 48:   # quick start: the first few words go first (~1.5 s to sound), the rest renders while she talks
+        first = out[0]; cut = first.find(", ", 12, 60)
+        if cut < 0:   # no comma: break before a joining word, never mid-phrase
+            m = re.search(r"\s(?=(?:and|but|so|because|which|while|then|when)\s)", first[16:70])
+            cut = 16 + m.start() if m else -1
+        if cut > 0:
+            out[0:1] = [first[:cut + 1].strip(), first[cut + 1:].strip()]
     return out
 
 
@@ -152,6 +159,10 @@ def serve(conn, model, conds, ta, tmp):
     except ValueError:
         return
     if req.get("ping"):
+        conn.sendall(b"ok\n"); return
+    if req.get("warm"):   # the answer is still streaming: record its finished first phrase into voice memory, no playback
+        parts = sentences((req.get("text") or "").strip())
+        if len(parts) >= 2: clip_for(model, conds, ta, parts[0], emotion(parts[0]))
         conn.sendall(b"ok\n"); return
     text = (req.get("text") or "").strip()
     if not text:

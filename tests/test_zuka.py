@@ -112,12 +112,25 @@ class NativeTests(unittest.TestCase):
         cap = SWIFT[SWIFT.index('    func capsule(_ on: Bool)'):SWIFT.index('    var pillOn = false')]
         self.assertIn('let w = CGFloat(on ? 212 : max(340, Prefs.num("boxW")))', cap)
         self.assertIn('js("listen"); capsule(true);', SWIFT)                       # listening = capsule
-        self.assertEqual(SWIFT.count('capsule(false); js("think")'), 2)           # thinking/answering = the box
+        self.assertEqual(SWIFT.count('capsule(false); warmedVoice = false; js("think")'), 2)           # thinking/answering = the box
         self.assertIn('capsule(true); show()', SWIFT)                              # the greeting opens as the capsule too
         gone = SWIFT[SWIFT.index('    func gone() {'):SWIFT.index('    func gone() {') + 200]
         self.assertIn('capsule(false)', gone)
         self.assertIn("capsule(on) { document.body.classList.toggle('capsule', !!on); fit(); }", UI)
         self.assertIn('body.hearing:not(.dictate) .q.empty { display: none; }', UI)   # one Listening line, no placeholder bubble
+
+    def test_usage_card_says_what_it_costs_and_answers_show_what_they_used(self):
+        src = (ROOT / 'atticus.py').read_text()
+        self.assertIn("'q': 'Answering this needs Claude.'", src)
+        self.assertIn('of your plan{more}. Free commands never ask.', src)
+        self.assertIn("print(f'$ {money(used)} used', flush=True)", src)
+        self.assertEqual(atticus.money(0.0004), '<$0.001'); self.assertEqual(atticus.money(0.0153), '$0.015')
+        self.assertIn("usage ? '<b></b><p class=\"cost\"></p><div><button>Skip</button><button class=\"go\">Go ahead</button></div>'", UI)
+        self.assertIn("} else if (tag === '$' && turn()) {", UI)
+
+    def test_first_phrase_is_prerecorded_while_the_answer_streams(self):
+        self.assertIn('if line.hasPrefix("… ") { self.warmVoice(String(line.dropFirst(2))) }', SWIFT)
+        self.assertIn('p.arguments = ["--warm", "--", partial]', SWIFT)
 
     def test_settings_has_zuka_switches(self):
         html = (ROOT / 'ui' / 'settings.html').read_text()

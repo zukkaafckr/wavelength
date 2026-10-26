@@ -20,7 +20,9 @@
   body.hearing:not(.dictate) #status { color: #ffcf8a; font-weight: 600; letter-spacing: .02em; }
   /* Zuka capsule: while she listens the box is a small dark capsule holding only her ribbon (no text, no double lines).
      It grows back into the box to think and answer, where your words and her reply show. */
-  body.capsule:not(.dictate) #card { padding: 0 12px; animation: none; }
+  body.capsule:not(.dictate) #card { padding: 0 12px; animation: none; border-radius: 18px;
+    background: radial-gradient(120% 160% at 50% 130%, rgba(196,50,95,.30), transparent 62%);   /* a warm glow so the capsule reads on dark screens */
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 0 0 1.5px rgba(255,106,136,.14); }
   body.capsule:not(.dictate) #head { height: 36px; justify-content: center; }
   body.capsule:not(.dictate) #head > :not(#ribbon), body.capsule:not(.dictate) :is(#thread, #comp, #pointbar, .e, #grip) { display: none !important; }
   body.capsule:not(.dictate) #ribbon { width: 168px; height: 26px; margin: 0; }
@@ -30,6 +32,7 @@
   .elapsed { display: flex; align-items: baseline; gap: 6px; margin-top: 16px; color: var(--fg2); font-size: 10.5px; line-height: 16px; animation: in .25s var(--ease) both; }
   .elapsed .redo { margin-left: auto; padding: 0; border: 0; background: none; font: 500 11px -apple-system, system-ui, sans-serif; color: var(--fg2); cursor: pointer; transition: color .2s; }
   .elapsed .redo:is(:hover,.hot) { color: #f5f5f7; }
+  .ok.usage .cost { margin: 4px 0 10px; color: var(--fg2); font-size: 12px; line-height: 1.45; }
   .elapsed b { color: var(--fg2); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
   #status span { display: inline-block; max-width: 100%; vertical-align: top; overflow: hidden; text-overflow: ellipsis; animation: in .35s var(--ease) both; }
   #status.live span { background: linear-gradient(90deg, var(--fg2) 0%, #fff 45%, var(--fg2) 90%); background-size: 200% 100%;
@@ -457,14 +460,14 @@
       const hearing = document.body.classList.contains('hearing'), thinking = /^(solving|searching|working)$/.test(state);
       ribT += (thinking ? 0.032 : hearing ? 0.016 : 0.008) * (reduced.matches ? 0 : 1);
       rctx.setTransform(dpr, 0, 0, dpr, 0, 0); rctx.clearRect(0, 0, RW, RH);
-      const lv = hearing ? Math.max(0.06, ribLv) : thinking ? 0.32 + 0.12 * Math.sin(ribT * 3) : 0.07;
+      const lv = hearing ? Math.max(0.2 + 0.06 * Math.sin(ribT * 5), ribLv) : thinking ? 0.32 + 0.12 * Math.sin(ribT * 3) : 0.07;   // listening always breathes, so it never looks frozen
       ['#ffb347', '#ff6a88', '#b06bff'].forEach((c, k) => {
         rctx.beginPath();
         for (let x = 0; x <= RW; x += 2) {
           const y = RH / 2 + Math.sin(x / (RW / 13 + k * RW / 37) + ribT * (4 + k)) * (2 + lv * RH * .42) * Math.sin(Math.PI * x / RW) * (1 - k * .2);
           x ? rctx.lineTo(x, y) : rctx.moveTo(x, y);
         }
-        const big = Math.max(1, RH / 40); rctx.strokeStyle = c; rctx.lineWidth = (2.4 - k * .5) * big; rctx.shadowColor = c; rctx.shadowBlur = 6 * big; rctx.globalAlpha = 1 - k * .2; rctx.stroke();
+        const big = Math.max(1.3, RH / 40); rctx.strokeStyle = c; rctx.lineWidth = (2.4 - k * .5) * big; rctx.shadowColor = c; rctx.shadowBlur = 6 * big; rctx.globalAlpha = 1 - k * .2; rctx.stroke();
       });
       rctx.globalAlpha = 1;
     }
@@ -973,6 +976,8 @@
           clock.append(b);
         }
       } else if (tag === '✎' && turn()) { try { receipt(JSON.parse(s)); } catch {}
+      } else if (tag === '$' && turn()) {   // Zuka: what the answer used, after its timer
+        const e = turn().querySelector('.elapsed'); if (e) { const c = document.createElement('b'); c.className = 'cost'; c.textContent = '· ' + s; e.insertBefore(c, e.querySelector('.redo')); fit(); }
       } else if (tag === 'i' && turn()) {
         const learned = s.startsWith('Learned: '), kofi = s.startsWith('Support: '), d = document.createElement('div');   // "Learned" when it saved a rule, the Ko-fi line, else "Tip"
         d.className = 'tip' + (learned ? ' learned' : kofi ? ' kofi' : ''); d.dataset.k = learned ? 'Learned' : kofi ? '♥' : 'Tip'; d.textContent = learned || kofi ? s.slice(9) : s;
@@ -1065,10 +1070,13 @@
           (details ? '<button class="details">Copy Details</button>' : '');
         d.querySelector('p').textContent = cmd;
       } else {
-        d.innerHTML = '<b></b><code></code><div><button>Don’t Allow</button><button class="go">Allow</button></div>';
-        d.querySelector('code').textContent = cmd;
+        const usage = q.startsWith('Answering this needs Claude');   // Zuka's usage card: plain words and Skip / Go ahead, not a security prompt
+        d.innerHTML = usage ? '<b></b><p class="cost"></p><div><button>Skip</button><button class="go">Go ahead</button></div>'
+                            : '<b></b><code></code><div><button>Don’t Allow</button><button class="go">Allow</button></div>';
+        if (usage) { d.classList.add('usage'); d.querySelector('p').textContent = cmd; d.querySelector('p').dataset.usage = '1'; }
+        else d.querySelector('code').textContent = cmd;
         const c = d.querySelector('code');
-        d.onclick = () => {   // the whole command: grows open, click again to fold it back
+        if (c) d.onclick = () => {   // the whole command: grows open, click again to fold it back
           if (c.classList.toggle('full')) c.classList.add('wrap'); else setTimeout(() => c.classList.contains('full') || c.classList.remove('wrap'), 340);
           follow(360);
         };
@@ -1079,7 +1087,7 @@
       if (detailsBtn) detailsBtn.onclick = e => { e.stopPropagation(); post({ copy: details }); };
       d.querySelectorAll(':scope > div > button').forEach((b, i) => b.onclick = e => {
         e.stopPropagation(); if (d.classList.contains('gone')) return;
-        post(retry ? { pick: b.dataset.answer } : { allow: !!i }); clockGo(); status(retry ? (i ? 'Trying again' : 'Not now') : i ? 'Allowed' : 'Not allowed', true); setState('solving');
+        post(retry ? { pick: b.dataset.answer } : { allow: !!i }); clockGo(); status(retry ? (i ? 'Trying again' : 'Not now') : d.classList.contains('usage') ? (i ? 'Going ahead' : 'Skipped') : i ? 'Allowed' : 'Not allowed', true); setState('solving');
         d.classList.add('gone'); follow(360); setTimeout(() => { d.remove(); fit(); }, 360);
       });
       (turn() || $('thread')).append(d); setState('breathing'); status('Waiting for you'); clockHold(); fit();

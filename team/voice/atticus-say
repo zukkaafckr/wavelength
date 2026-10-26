@@ -16,6 +16,8 @@ MIN_FREE = 20       # % free memory below which a cold start is skipped: Premier
 EXPORT_CPU = 150    # Premiere + Media Encoder CPU % above this counts as exporting
 
 args = sys.argv[1:]
+warm = args[:1] == ["--warm"]   # pre-record the first phrase of a streaming answer; never starts the engine, never speaks
+if warm: args = args[1:]
 text = " ".join(args[args.index("--") + 1:]) if "--" in args else (args[-1] if args else "")
 
 
@@ -65,6 +67,12 @@ if not text.strip():
     sys.exit(0)
 if exporting():
     sys.exit(0)   # text only while an export runs: the voice would steal its CPU
+if warm:
+    try:
+        c = connect(); c.settimeout(60); c.sendall((json.dumps({"text": text, "warm": True}) + "\n").encode()); c.makefile("rb").readline()
+    except OSError:
+        pass
+    sys.exit(0)
 
 try:
     conn = connect()
