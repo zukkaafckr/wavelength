@@ -7537,26 +7537,35 @@ final class WakeListener {
             }
         }
     }
+    private var opened = false, ack: Process?
     private func heard(_ text: String) {
         let low = text.lowercased()
         guard let hit = names.compactMap({ n in low.range(of: "\\b" + NSRegularExpression.escapedPattern(for: n) + "\\b", options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound }) else { return }
-        woke = true
         rest = String(text[hit.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces))
+        if !woke {   // the moment she hears her name: the box opens listening and she answers, all at once
+            woke = true; opened = true
+            app.show(); app.js("listen")
+            if app.warm == nil { app.warm = app.spawn() }   // her brain loads while you talk
+            if Prefs.bool("greet"), let clip = app.greetingClip(["ack"]) {   // "Yes, J?" (echo-cancelled: she doesn't hear herself)
+                let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]; try? p.run(); ack = p
+            }
+        }
+        if !rest.isEmpty { app.js("words", rest) }
         settle?.cancel()
         let go = DispatchWorkItem { [weak self] in self?.act() }; settle = go
-        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 0.7 : 1.0), execute: go)   // let the sentence finish
+        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 6 : 0.6), execute: go)   // act 0.6 s after you stop; nothing said in 6 s: close
     }
     private func act() {
         let said = rest; stop()
         guard !Prefs.bool("paused"), !app.engine.isRunning, !app.busy else { return }
-        if said.split(separator: " ").count >= 1 && said.count >= 3 { app.show(); app.typed(said) }   // "Zuka, open Calculator": straight to it
-        else { app.clickTalk = true; app.start(); if !app.engine.isRunning { app.clickTalk = false } }   // "Zuka": she listens
+        if said.count >= 2 { app.typed(said, heard: true) }   // straight to it, the box already shows the words
+        else { app.close(clear: false) }
     }
     func stop() {
         settle?.cancel(); settle = nil
         task?.cancel(); task = nil; request?.endAudio(); request = nil
         if let e = engine { e.inputNode.removeTap(onBus: 0); e.stop(); try? e.inputNode.setVoiceProcessingEnabled(false); engine = nil }
-        woke = false; rest = ""
+        woke = false; rest = ""; opened = false
     }
 }
 let wake = WakeListener()

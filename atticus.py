@@ -7717,7 +7717,6 @@ def main():
     if quick:
         quick_cancelled = quick.startswith('The user said no.')
         quick_failed = failed_action_reply(quick, bool(getattr(fast, 'cmds', [])))
-        if reading_started: reading.join()   # the summary cannot recreate its scratch file after a fast exit
         if snap.started: atexit.register(snap.join, .3)
         quick = ' '.join(done + [quick])
         if warm:
@@ -7725,9 +7724,11 @@ def main():
         if quick_cancelled: end_turn('cancelled', emit=False)
         elif quick_failed: end_turn('failed', emit=False)
         remember_turn(task, quick, getattr(fast, 'shortcut', None))
+        said = say('!' if quick.startswith('The user said no.') else '✓', quick)   # Zuka: the answer first (the box speaks it now)
         log_turn(task, quick, t, model='instant',
                  path='shortcut' if getattr(fast, 'shortcut', None) else 'instant', attempt_usd=[])
-        return say('!' if quick.startswith('The user said no.') else '✓', quick)
+        if reading_started: reading.join()   # then let the window read finish: the summary cannot recreate its scratch file after a fast exit
+        return said
     if pref('usageCheck', False) and not online():   # Zuka offline: free commands already ran above; say so instead of failing
         if warm: stop_claude(warm)
         end_turn('cancelled', emit=False)
