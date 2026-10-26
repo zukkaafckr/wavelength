@@ -87,7 +87,7 @@ print("long step stays reachable")
 let heard = '', clicked = '';
 const buttons = {n:{click(){clicked='n'}}, r:{click(){clicked='r'}}};
 const d = {querySelector(s){const m=s.match(/data-answer="(.)"/);return m ? buttons[m[1]] || null : null;}};
-const thread = {querySelector(s){return s.startsWith('.pk') ? null : d;}};
+const thread = {querySelector(s){return s.startsWith('.pk') || s.includes(':not(.offer)') ? null : d;}};
 const ask = {value:''}, $ = id => id === 'thread' ? thread : ask, status = s => {heard=s};
 const ui = {
 ''' + respond + r'''
@@ -163,7 +163,7 @@ print("hidden rewrite target kept")
     def test_spoken_drawing_reply_keeps_the_done_card_agent(self):
         start = self.swift[self.swift.index("    func start(dictate: Bool)"):self.swift.index("    func heard(")]
         typed = self.swift[self.swift.index("    func typed("):self.swift.index("    func finish()", self.swift.index("    func typed("))]
-        self.assertIn('replyAgent = dictate || (retryOffer && !askFile.isEmpty) ? "" : agentCard', start)
+        self.assertIn('replyAgent = dictate || !askFile.isEmpty ? "" : agentCard', start)   # Zuka: any card can be answered by voice
         self.assertIn('if !heard { replyAgent = agentCard }', typed)
         self.assertNotIn('replacement = nil; replyAgent = agentCard', typed)
 

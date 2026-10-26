@@ -107,22 +107,38 @@ class NativeTests(unittest.TestCase):
         for gone in ('focusMode', 'Backdrop', 'enterFocus'): self.assertNotIn(gone, SWIFT)
         self.assertNotIn('body.focus', UI)
 
-    def test_top_center_listening_capsule(self):
-        self.assertIn('Prefs.str("corner") == "top-center" ? vf.midX - panel.frame.width / 2', SWIFT)
-        cap = SWIFT[SWIFT.index('    func capsule(_ on: Bool)'):SWIFT.index('    var pillOn = false')]
-        self.assertIn('let w = CGFloat(on ? 212 : max(340, Prefs.num("boxW")))', cap)
-        self.assertIn('js("listen"); capsule(true);', SWIFT)                       # listening = capsule
-        self.assertEqual(SWIFT.count('capsule(false); warmedVoice = false; js("think")'), 2)           # thinking/answering = the box
-        self.assertIn('capsule(true); show()', SWIFT)                              # the greeting opens as the capsule too
-        gone = SWIFT[SWIFT.index('    func gone() {'):SWIFT.index('    func gone() {') + 200]
-        self.assertIn('capsule(false)', gone)
-        self.assertIn("capsule(on) { document.body.classList.toggle('capsule', !!on); fit(); }", UI)
-        self.assertIn('body.hearing:not(.dictate) .q.empty { display: none; }', UI)   # one Listening line, no placeholder bubble
+    def test_listening_opens_the_premium_box_with_live_words(self):
+        self.assertNotIn('capsule', SWIFT); self.assertNotIn('capsule', UI)   # the thin capsule is gone: the box opens
+        self.assertIn('body.hearing:not(.dictate) .turn:last-child .q.empty::before { content: "Go ahead, J."', UI)
+        self.assertIn('body.hearing:not(.dictate) #status::before', UI)   # the live gold dot next to "Listening"
+
+    def test_cards_are_asked_aloud_and_answered_by_voice(self):
+        self.assertIn('if self.askNeed.isEmpty { self.askAloud(p[0], p[1]) }', SWIFT)
+        self.assertIn('let replying = drawingReply || !askFile.isEmpty', SWIFT)   # talking with a card up answers it
+        self.assertIn("const ok = $('thread').querySelector('.ok:not(.gone):not(.offer)');", UI)
+        self.assertIn('if let then { then() } else { self.hide(after: 2) }', SWIFT)   # the mic opens after she finishes asking
+
+    def test_go_ahead_covers_the_whole_task(self):
+        src = (ROOT / 'atticus.py').read_text()
+        self.assertIn("!= 'y' or grant():", src)
+        self.assertEqual(src.count("!= 'y' or grant():"), 2)   # the Claude card and the helper card
+        self.assertIn("if q and q not in OUTWARD and granted(): q = ''", src)
+        self.assertEqual(atticus.OUTWARD, ('Delete something?', 'Send this?', 'Buy this?'))
+        self.assertIn('rm', atticus.DENIED)
+
+    def test_real_session_and_week_usage(self):
+        import tempfile, time as _t
+        with tempfile.TemporaryDirectory() as d, patch.object(atticus, 'LIMITS', os.path.join(d, 'l.json')):
+            self.assertEqual(atticus.limits_line(), '')
+            atticus.save_limits({'unifiedWindows': {'five_hour': {'utilization': 0.19, 'resetsAt': _t.time() + 900},
+                                                    'seven_day': {'utilization': 0.63, 'resetsAt': _t.time() + 9e5}}})
+            self.assertEqual(atticus.limits_line(), "You're at 19% of your session and 63% of your week.")
+        self.assertIn("elif j.get('type') == 'rate_limit_event':", (ROOT / 'atticus.py').read_text())
 
     def test_usage_card_says_what_it_costs_and_answers_show_what_they_used(self):
         src = (ROOT / 'atticus.py').read_text()
         self.assertIn("'q': 'Answering this needs Claude.'", src)
-        self.assertIn("bit of your plan\\'s session limit{more}. Free commands never ask.", src)
+        self.assertIn("f'Usually {ask_share(usual_cost())} of your session{more}. {limits_line()} Go ahead?'", src)
         self.assertIn("print(f'$ {plan_size(used)} use of your plan', flush=True)", src)
         self.assertNotIn('extra credits', src)   # never promise what only the account setting controls
         self.assertEqual(atticus.plan_size(0.0015), 'a tiny'); self.assertEqual(atticus.plan_size(0.2), 'a large')
@@ -138,9 +154,9 @@ class NativeTests(unittest.TestCase):
         src = (ROOT / 'atticus.py').read_text()
         self.assertIn('return youtube_play(None if re.fullmatch', src)
         self.assertLess(src.index('return youtube_play('), src.index("m = re.fullmatch(r'play (?:my |the )?(?:spotify )?"))   # before the Spotify rule
-        with patch('atticus.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
+        with patch('atticus.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='new')) as run:
             self.assertIn('Which song', atticus.youtube_play(None))
-            self.assertEqual(run.call_args[0][0], ['open', 'https://www.youtube.com/'])
+            self.assertEqual(run.call_args[0][0][-1], 'https://www.youtube.com/')   # Brave, reusing a YouTube tab
 
     def test_quiet_agents_still_ask_for_risky_steps(self):
         src = (ROOT / 'atticus.py').read_text()

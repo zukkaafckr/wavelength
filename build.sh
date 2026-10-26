@@ -16,7 +16,7 @@ trap 'rm -rf "$STAGE"' EXIT
 swiftc -O -target "$(uname -m)-apple-macos26.0" Atticus.swift -o "$STAGE/Atticus"
 APP=~/Applications/Atticus.app   # in Applications so System Settings can list it for permissions
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
-cp atticus.py "$APP/Contents/Resources/"
+cp atticus.py zuka_commands.py "$APP/Contents/Resources/"
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
 cp ui/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<P

@@ -35,6 +35,10 @@ The app's own setup window guides this. Stay with them and explain each ask in o
 
 - **It asks before it uses your Claude plan.** Opening apps, moving windows, playing music, running shortcuts: free, instant, never asks. Anything that needs Claude's thinking asks you first ("this uses your Claude plan, okay?"). This is on by default and can be changed in Settings.
 - **It never spends money beyond their plan.** It runs on their Claude plan only (no API key). Tell them to check claude.ai → Settings → Usage and keep "extra usage" switched off, so nothing is ever charged once they hit a limit.
+- **Talk, don't click.** When it needs an OK it says the question out loud and listens: they just say "yes, go ahead" or "skip". It tells them roughly how much of their session it usually takes and where their session and weekly usage stand right now.
+- **One "go ahead" covers the whole task.** The steps then run on their own. Only deleting something, sending a message or buying asks again (out loud).
+- **Free dictation, like Wispr Flow.** Hold **fn**, talk, let go: the words are typed into whatever text box is selected. Double-tap fn to keep it on hands-free. It runs on the Mac and never uses their Claude plan. In System Settings → Keyboard, set "Press 🌐 key to" → **Do Nothing**, so fn doesn't also open emoji. If they use Wispr Flow, quit it (it also uses fn).
+- **Instant checks:** "check LinkedIn", "any new messages on WhatsApp", "check Gmail", "any meetings today" read the unread badges of their Brave tabs and calendar, free.
 - **It works offline for the free things.** With no internet it says what it can still do instead of failing.
 - **Paid creative tools are blocked on purpose.** It will never use Atria or Higgsfield, because those spend paid credits. Use them yourself in the browser.
 - **No data leaves the Mac by default:** no telemetry, no background updates. Updates happen only when you ask (see below).

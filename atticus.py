@@ -710,6 +710,23 @@ def search_first(ask):
     return bool(ask) and not os.path.exists(os.path.join(ask, 'searched'))
 
 
+GRANT = os.path.join(DIR, 'go-ahead')
+OUTWARD = ('Delete something?', 'Send this?', 'Buy this?')   # Zuka: the only steps that still ask after "go ahead" (by voice)
+
+
+def grant(on=True):
+    """Zuka: J said "go ahead" to a Claude task: its steps run without a card each (45 min, renewed by every go-ahead)."""
+    try:
+        if on: Path(GRANT).touch()
+        else: os.remove(GRANT)
+    except OSError: pass
+
+
+def granted():
+    try: return pref('usageCheck', False) and time.time() - os.path.getmtime(GRANT) < 2700
+    except OSError: return False
+
+
 def gate():
     """AI client's PreToolUse hook: native hands cannot bypass their wrapper; in safe mode a risky command waits for the user's Allow (60 s, then no).
     Allowed = it runs for real, outside the sandbox. The AI asking to leave the sandbox by itself asks too."""
@@ -777,12 +794,15 @@ def gate():
             decision(False, 'Safe mode: connector metadata is missing; approval is required.')
             return
         kind = event['tool_name']
+        if granted() and not re.search(r'send|delete|trash|remove|post|publish|purchase|pay|forward|reply|invite|share', kind.rsplit('__', 1)[-1], re.I):
+            decision(True, ''); return   # Zuka: covered by J's go-ahead; sending, deleting, posting still ask
         answer = 'y' if task_allowed(kind) else ask_user({'q': 'Allow this connector action?',
                          'cmd': event['tool_name'] + '\n' + json.dumps(inp, ensure_ascii=False)[:800], 'task': True}, 600)
         if answer == 'task': allow_for_task(kind)
         decision(answer in ('y', 'task'), 'The user said no. Do not try another way.')
         return
-    ordinary = event.get('tool_name') == 'Bash' and pref('quietAgents', False) and not risky(inp.get('command', ''))   # Zuka: agents run ordinary commands without a card each time; deletes, sends, buys, file changes still ask (below)
+    ordinary = event.get('tool_name') == 'Bash' and pref('quietAgents', False) and not risky(inp.get('command', '')) \
+        or granted() and (event.get('tool_name') != 'Bash' or risky(inp.get('command', '')) not in OUTWARD)   # Zuka: agents run ordinary commands without a card each time; deletes, sends, buys, file changes still ask (below)
     if os.environ.get('ATTICUS_AGENT') and pref('safe', True) and event.get('tool_name') in ('Bash', 'Write', 'Edit') and not trusted_read and not ordinary:
         kind = action_kind(event['tool_name'], inp)
         answer = 'y' if task_allowed(kind) else ask_user(
@@ -818,6 +838,7 @@ def gate():
         decision(False, 'Use atticus.py --hands or --calendar; native actions and safety overrides are not model tools.')
         return
     q = '' if agent_approved or trusted_read else risky(cmd) or ('Run outside the safe folder?' if inp.get('dangerouslyDisableSandbox') or external and cmd else '')
+    if q and q not in OUTWARD and granted(): q = ''   # Zuka: J's go-ahead covers the task's ordinary steps
     if not q or not os.environ.get('ATTICUS_ASK') or not pref('safe', True):
         if os.environ.get('ATTICUS_ASK'): preview_commands(cmd)
         record_external()
@@ -1436,11 +1457,47 @@ def spotify_item(name, anything=True):
     return p
 
 
+SMALL_TALK = [
+    (r"(?:how are you|how(?:'s| is) it going|how(?: are)? you doing|what'?s up|sup)(?: today)?", ['Doing great, J!', 'All good here, J!', 'Never better, J!']),
+    (r'(?:thanks|thank you|thank u|cheers)(?: so much| a lot)?', ['Anytime, J.', 'Happy to help, J.', 'Always, J.']),
+    (r'good (?:morning|afternoon|evening)', ['Hey J, good to hear you.', 'Hello, J!']),
+    (r'(?:hi|hello|hey there|yo)', ['Hey J!', 'Hi J!']),
+    (r'(?:who are you|what(?:\'s| is) your name)', ['I\'m Zuka, your assistant on Wavelength.']),
+]
+
+
+def small_talk(t):
+    """Zuka: small talk at the start of a request -> (reply, the rest of the request). Free, no AI."""
+    rest, said = t, None
+    while True:
+        for rx, replies in SMALL_TALK:
+            m = re.match(rf'(?:{rx})\b[\s,.!?]*(?:(?:and|so|also|ok|okay|well)\b\s*)?', rest)
+            if m:
+                said = said or replies[int(time.time()) % len(replies)]; rest = rest[m.end():].strip(); break
+        else:
+            break
+    if not said: return None
+    rest = re.sub(r'^(?:(?:can|could|would|will) you|please|zuka)\s+', '', rest).strip()
+    return (said + ('' if rest else ' What can I do for you?'), rest)
+
+
+def youtube_tab(url):
+    """Zuka: YouTube in J's own Brave, reusing its YouTube tab; a Brave-installed YouTube app would otherwise grab the link."""
+    r = osa('on run argv\nset u to item 1 of argv\ntell application "Brave Browser"\nactivate\nif (count of windows) = 0 then make new window\n'
+            'set home to missing value\nrepeat with w in windows\nif (count of tabs of w) > 1 then\n'   # one-tab windows are installed web apps (YouTube.app): skip them
+            'if home is missing value then set home to w\nset i to 0\nrepeat with t in tabs of w\nset i to i + 1\n'
+            'if URL of t contains "youtube.com" then\nset URL of t to u\nset active tab index of w to i\nset index of w to 1\nreturn "reused"\nend if\n'
+            'end repeat\nend if\nend repeat\nif home is missing value then\nset home to make new window\nset URL of active tab of home to u\nelse\n'
+            'tell home to make new tab with properties {URL:u}\nset index of home to 1\nend if\nreturn "new"\nend tell\nend run', url)
+    if r in ('reused', 'new'): return True
+    return not subprocess.run(['open', '-a', 'Brave Browser', url], capture_output=True).returncode   # scripting refused: still Brave, never the web app
+
+
 def youtube_play(query):
     """Zuka: the first YouTube result for the words, opened in the browser to play. Free and instant: one page fetch, no AI."""
     if not query:
-        subprocess.run(['open', 'https://www.youtube.com/'], capture_output=True)
-        return 'YouTube is open. Which song? Say "play" and the name, and I\'ll put it on.'
+        youtube_tab('https://www.youtube.com/')
+        return 'YouTube is open. Which song, J? Say "play" and the name, and I\'ll put it on.'
     url = 'https://www.youtube.com/results?search_query=' + urllib.parse.quote_plus(query)
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh)', 'Accept-Language': 'en'})
@@ -1448,7 +1505,7 @@ def youtube_play(query):
     except (OSError, ValueError):
         vid = None   # offline or blocked: show the search instead
     target = f'https://www.youtube.com/watch?v={vid[1]}' if vid else url
-    if subprocess.run(['open', target], capture_output=True).returncode: return None
+    if not youtube_tab(target): return None
     fast.cmds = [f'open {shlex.quote(target)}']
     return f'Playing {query} on YouTube.' if vid else f'Here is YouTube for {query}.'
 
@@ -2061,6 +2118,16 @@ def fast(text):
             return reply
         return None
     t = plain(text)
+    if os.environ.get('ATTICUS_LIVE') != '1':   # Zuka's free HOA and inbox commands (never mid-sentence: one makes folders)
+        import zuka_commands
+        said = zuka_commands.handle(t)
+        if said: return said
+    chat = small_talk(t)   # Zuka: greetings and thanks never cost Claude; a command after them still runs
+    if chat:
+        greet, rest = chat
+        if not rest: return greet
+        done = fast(rest)
+        return f'{greet} {done}' if done else None
     if t in ('report feedback', 'report a bug'):
         if os.environ.get('ATTICUS_LIVE') == '1': return None
         say('!', 'feedback')
@@ -2113,8 +2180,8 @@ def fast(text):
             return None
         fast.cmds = [f'{SHOW} --bg {shlex.quote(target)}']
         return f'Searched {query}' + (f' on {site[1]}.' if site else '.')
-    m = re.fullmatch(r'(?:(?:open|go to|on) youtube and )?play (?:the song |song |the video |video )?(.+?) (?:on|in|from) youtube'
-                     r'|(?:open|go to) youtube and play (?:the song |song |the video |video )?(.+)', t)   # Zuka: free and instant, no AI
+    m = re.search(r'(?:^|\b)(?:(?:open|go to|on) youtube and )?play (?:the song |song |the video |video )?(.+?) (?:on|in|from) youtube\b'
+                  r'|(?:open|go to) youtube and play (?:the song |song |the video |video )?(.+)', t)   # Zuka: free and instant, no AI; small talk before it is fine
     if m:
         what = m[1] or m[2]
         return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a)? ?(?:song|music|video|something)', what) else what)
@@ -3401,6 +3468,42 @@ def usual_cost():
         if len(vals) >= 30: break
     vals = sorted(v for v in vals if v > 0)
     return vals[len(vals) // 2] if vals else 0.002
+
+
+LIMITS = os.path.join(DIR, 'limits.json')
+
+
+def save_limits(info):
+    """Zuka: Claude's stream reports the plan's real usage (5-hour session and weekly) with every answer; keep the latest."""
+    w = (info or {}).get('unifiedWindows') or {}
+    if not isinstance(w, dict) or not w: return
+    row = {'at': time.time()}
+    for k, name in (('five_hour', 'session'), ('seven_day', 'week')):
+        if isinstance(w.get(k), dict) and isinstance(w[k].get('utilization'), (int, float)):
+            row[name], row[name + '_resets'] = float(w[k]['utilization']), w[k].get('resetsAt')
+    try: private_json(LIMITS, row)
+    except OSError: pass
+
+
+def limits_line():
+    """Zuka: "You're at 19% of your session and 63% of your week." from the last answer's report ('' before the first one).
+    A window that has reset since counts as fresh; a reading over 30 minutes old says so (other Claude use moves it too)."""
+    try:
+        with open(LIMITS) as f: row = json.load(f)
+    except (OSError, ValueError): return ''
+    now, parts = time.time(), []
+    for name in ('session', 'week'):
+        if not isinstance(row.get(name), (int, float)): continue
+        fresh = isinstance(row.get(name + '_resets'), (int, float)) and now > row[name + '_resets']
+        parts.append(f"{0 if fresh else round(row[name] * 100)}% of your {name}")
+    if not parts: return ''
+    old = now - row.get('at', now) > 1800
+    return ("Last I saw, you were at " if old else "You're at ") + ' and '.join(parts) + '.'
+
+
+def ask_share(usd):
+    """Zuka: one ask's usual share of the 5-hour session, in plain words."""
+    return {'a tiny': 'well under 1%', 'a small': 'under 1%', 'a medium': 'about 1%'}.get(plan_size(usd), 'a few percent')
 
 
 def online():
@@ -5384,7 +5487,7 @@ def run(task, p=None, shots=(), auto_work=False, *, request=None, main_only=Fals
                     if not wait_commit():
                         stop_claude(p)
                         return '', None, steps
-                    if pref('usageCheck', False) and ask_user({'q': 'Start a background helper for this?', 'cmd': 'It works on its own with a bigger model, so it uses a bigger share of your plan\'s session limit. Free commands never ask.'}, 120) != 'y':
+                    if pref('usageCheck', False) and ask_user({'q': 'Start a background helper for this?', 'cmd': f'It works on its own with a bigger model, so a few percent of your session. {limits_line()} Go ahead?'.replace('  ', ' ')}, 120) != 'y' or grant():
                         stop_claude(p)   # Zuka: background agents cost more than a question, so J okays each one
                         return 'Okay, no background helper. Say it in a simpler way, or ask again when you\'re ready.', 0, []
                     if directive.get('namedAction'):
@@ -5451,6 +5554,8 @@ def run(task, p=None, shots=(), auto_work=False, *, request=None, main_only=Fals
                             step.update(secs=round(time.monotonic() - step.pop('_start', time.monotonic()), 3), status='failed' if b.get('is_error') else 'completed')
                             checkpoint()
                         if i is not None and not b.get('is_error'): preview_commands(cmds[i], getattr(p, 'ask', None))
+            elif j.get('type') == 'rate_limit_event':
+                save_limits(j.get('rate_limit_info'))
             elif j.get('type') == 'result':
                 if move: move.close()
                 p.waiting.clear()
@@ -7563,7 +7668,7 @@ def main():
     if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in the team install's settings; a fresh config (tests) never asks
         # Zuka: past the free instant commands every ask spends the Claude plan, so the user okays it first
         more = '' if routing_mode() == 'cheapest' else ' (more if it needs a bigger model)'
-        if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'It uses {plan_size(usual_cost())} bit of your plan\'s session limit{more}. Free commands never ask.'}, 60) != 'y':
+        if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'Usually {ask_share(usual_cost())} of your session{more}. {limits_line()} Go ahead?'.replace('  ', ' ')}, 60) != 'y' or grant():
             if warm: stop_claude(warm)
             end_turn('cancelled', emit=False)
             log_turn(task, 'Skipped before using Claude.', t, model='instant', path='instant', attempt_usd=[])

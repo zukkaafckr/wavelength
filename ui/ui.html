@@ -18,15 +18,18 @@
   #ribbon { display: none; width: 92px; height: 36px; margin: 0 2px 0 -6px; }
   body:not(.dictate) #ribbon { display: block; } body:not(.dictate) #orb { display: none; }
   body.hearing:not(.dictate) #status { color: #ffcf8a; font-weight: 600; letter-spacing: .02em; }
-  /* Zuka capsule: while she listens the box is a small dark capsule holding only her ribbon (no text, no double lines).
-     It grows back into the box to think and answer, where your words and her reply show. */
-  body.capsule:not(.dictate) #card { padding: 0 12px; animation: none; border-radius: 18px;
-    background: radial-gradient(120% 160% at 50% 130%, rgba(196,50,95,.30), transparent 62%);   /* a warm glow so the capsule reads on dark screens */
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 0 0 1.5px rgba(255,106,136,.14); }
-  body.capsule:not(.dictate) #head { height: 36px; justify-content: center; }
-  body.capsule:not(.dictate) #head > :not(#ribbon), body.capsule:not(.dictate) :is(#thread, #comp, #pointbar, .e, #grip) { display: none !important; }
-  body.capsule:not(.dictate) #ribbon { width: 168px; height: 26px; margin: 0; }
-  body.hearing:not(.dictate) .q.empty { display: none; }   /* one Listening line in the box view: no placeholder bubble */
+  /* Zuka listening: a premium box that shows she is listening and what she hears, live.
+     Header: her ribbon + one gold "Listening" status (never doubled). Body: the words as they come, large and clean. */
+  #card { box-shadow: inset 0 0 0 1px rgba(255,255,255,.07), inset 0 1px 0 rgba(255,255,255,.06); border-radius: 18px; }
+  body.hearing:not(.dictate) #card { box-shadow: inset 0 0 0 1px rgba(255,106,136,.22), inset 0 0 26px rgba(196,50,95,.10); }
+  body.hearing:not(.dictate) #ribbon { width: 120px; height: 34px; }
+  body.hearing:not(.dictate) #status::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 7px 1px 0; border-radius: 50%;
+    background: #ffcf8a; box-shadow: 0 0 8px #ffb347; animation: live 1.2s ease-in-out infinite; vertical-align: middle; }
+  @keyframes live { 50% { opacity: .35; transform: scale(.8); } }
+  body.hearing:not(.dictate) .turn.old { display: none; }
+  body.hearing:not(.dictate) .turn:last-child .q { margin: 4px 0 6px; max-width: 100%; padding: 0 2px; background: none; box-shadow: none; border-radius: 0;
+    font-size: 19px; line-height: 1.4; font-weight: 500; letter-spacing: -.005em; color: #f7f5fa; }
+  body.hearing:not(.dictate) .turn:last-child .q.empty::before { content: "Go ahead, J."; color: rgba(247,245,250,.38); font-weight: 400; }   /* the status says Listening; this invites the words */
   #status { flex: 1 0 64px; min-width: 64px; font-size: 12.5px; line-height: 22px; color: var(--fg2); white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   .elapsed { display: flex; align-items: baseline; gap: 6px; margin-top: 16px; color: var(--fg2); font-size: 10.5px; line-height: 16px; animation: in .25s var(--ease) both; }
@@ -893,7 +896,6 @@
       $('thread').append(d); atBottom = true;   // a new ask: back to following the newest
       setState('listening'); boost = 1; status('Listening…', true); fit();
     },
-    capsule(on) { document.body.classList.toggle('capsule', !!on); fit(); },   // Zuka: the listening capsule
     level(v) {
       v = Math.min(1, Math.max(0, v));
       boost = 0.5 + v * 2.5; ribLv = ribLv * .5 + v * .5; $('orb').style.transform = `scale(${1 + v * .1})`;
@@ -1051,6 +1053,15 @@
     respond(text) {
       const o = $('thread').querySelector('.pk:not(.gone) .other');   // a choices card: the main box works like its "Something else" field
       if (o) { $('ask').value = ''; o.value = text; o.onkeydown({ key: 'Enter', preventDefault() {} }); return true; }
+      const ok = $('thread').querySelector('.ok:not(.gone):not(.offer)');   // Zuka: an approval answered out loud
+      if (ok) {
+        const t = ' ' + text.toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+        const no = /^ (no|nope|nah|nahi|skip|cancel|stop|don'?t|do not|not now|leave it|never ?mind)\b| (skip|cancel|not now|don'?t) /.test(t);
+        const yes = /^ (yes|yeah|yep|yup|ya|sure|go|go ahead|do it|proceed|ok|okay|alright|allow|haan|han|ha|chalo|carry on|continue|please)\b/.test(t);
+        const b = no ? ok.querySelector(':scope > div > button:not(.go)') : yes ? ok.querySelector(':scope > div > .go') : null;
+        if (b) { $('ask').value = ''; b.click(); } else status('Say “yes” or “no”', true);
+        return true;
+      }
       const d = $('thread').querySelector('.ok.retry:not(.gone)');
       if (!d) return false;
       const t = text.toLowerCase().replace(/[.!?,]+/g, ' ').replace(/^\s*(?:um+|uh+|okay|ok|yeah|so)\s+/, '').replace(/\s+please\s*$/, '').replace(/\s+/g, ' ').trim();   // "Retry, please." = retry

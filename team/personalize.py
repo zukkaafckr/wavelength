@@ -6,7 +6,7 @@
 NAME      what you will see and say: the app name, menu, window titles, persona line ("Nova", "Echo"...)
 CALLNAME  what it calls you ("Sam")
 
-Rewrites the visible name "Zuka" to NAME and the call-name "J" in the offline message to CALLNAME. Internal names
+Rewrites the visible name "Zuka" to NAME and the call-name "J" in every spoken line to CALLNAME. Internal names
 (Atticus.swift, the com.atticus.app bundle id, ~/.atticus, environment variables) are left alone so updates still work.
 Runs once per copy: it leaves team/.personalized behind and refuses to run again.
 """
@@ -15,8 +15,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MARK = ROOT / "team" / ".personalized"
-FILES = [*sorted((ROOT / "ui").glob("*.html")), ROOT / "Atticus.swift", ROOT / "atticus.py", ROOT / "build.sh", ROOT / "tests" / "test_zuka.py"]
-OFFLINE = ", J. I can still open and arrange apps"
+FILES = [*sorted((ROOT / "ui").glob("*.html")), ROOT / "Atticus.swift", ROOT / "atticus.py", ROOT / "zuka_commands.py", ROOT / "build.sh",
+         ROOT / "tests" / "test_zuka.py", ROOT / "tests" / "test_zuka_commands.py"]
+CALL = re.compile(r"(?<=[ ,])J(?=[.?!,:'\"])")   # the call-name in spoken lines: "On it, J." "Hey J!" "J's"
 SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 \-]{0,30}")
 
 
@@ -30,11 +31,8 @@ def main(argv):
     for path in FILES:
         text = path.read_text()
         new, n = re.subn(r"\bZuka\b", name, text)
-        if path.name == "atticus.py":
-            if OFFLINE not in new:
-                print("The offline message was not found; is this the team edition?"); return 1
-            new, c = new.replace(OFFLINE, f", {call}. I can still open and arrange apps"), 1
-            n += c
+        new, c = CALL.subn(call, new)
+        n += c
         if n:
             path.write_text(new); counts[str(path.relative_to(ROOT))] = n
     MARK.write_text(f"name={name} call={call}\n")

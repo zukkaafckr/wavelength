@@ -1909,16 +1909,28 @@ final class App: NSObject, WKScriptMessageHandler {
         guard let v = voice else { return false }; voice = nil
         guard v.isRunning else { return false }; v.terminate(); return true
     }
-    func deliver(_ a: String, aloud: Bool = true) {   // Settings: read answers aloud, copy them
+    func deliver(_ a: String, aloud: Bool = true, then: (() -> Void)? = nil) {   // Settings: read answers aloud, copy them (then: runs after she finishes speaking)
         if Prefs.bool("autoCopy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(a, forType: .string) }
         if Prefs.bool("speak") && aloud {
             let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
             if !zukaVoice { siriVoice() }   // retry for next time: this read uses the fallback after a previous Siri test failed
             shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: ({ let h = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"; return FileManager.default.isExecutableFile(atPath: h) ? h : "/usr/bin/say" }())); p.arguments = arguments
             p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
-                guard let self, self.voice === p else { return }; self.voice = nil; self.hide(after: 2)
+                guard let self, self.voice === p else { return }; self.voice = nil; if let then { then() } else { self.hide(after: 2) }
             } }
             try? p.run(); voice = p
+        }
+    }
+    // Zuka: a card is asked out loud, then the mic opens on its own for the answer: no mouse, it's a conversation.
+    func askAloud(_ q: String, _ detail: String) {
+        guard Prefs.bool("speak") else { return }
+        let path = askFile
+        let said = q.hasPrefix("Answering this needs Claude") ? "That one needs Claude, J. " + detail
+                 : q.hasPrefix("Start a background helper") ? "Want a background helper on this, J? " + detail
+                 : retryOffer ? q + " Want me to try again?" : q + " Say yes or no, J."
+        deliver(said) { [weak self] in
+            guard let self, self.askFile == path, !self.engine.isRunning else { return }
+            self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }   // a pause ends it, silence closes the mic
         }
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
@@ -2337,7 +2349,6 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     func gone() {
         if let g = greeter { greeter = nil; g.terminate() }
-        capsule(false)
         defaultKey(false)
         mini.reset()
         followTimer?.invalidate(); followTimer = nil
@@ -2353,15 +2364,6 @@ final class App: NSObject, WKScriptMessageHandler {
         guard FileManager.default.isExecutableFile(atPath: helper) else { return }
         warmedVoice = true
         let p = Process(); p.executableURL = URL(fileURLWithPath: helper); p.arguments = ["--warm", "--", partial]; try? p.run()
-    }
-    var capsuleOn = false
-    func capsule(_ on: Bool) {   // Zuka: while she listens the box is a small capsule (just her ribbon); it grows back into the box to think and answer
-        guard !pillOn, on || capsuleOn else { return }
-        if on != capsuleOn { capsuleOn = on; js("capsule", on) }
-        let w = CGFloat(on ? 212 : max(340, Prefs.num("boxW")))
-        var f = panel.frame; guard f.width != w else { return }   // the real width, not a flag: other steps resize the box too
-        if Prefs.str("corner") == "top-right" { f.origin.x = f.maxX - w } else if Prefs.str("corner") == "top-center" { f.origin.x = f.midX - w / 2 }
-        f.size.width = w; frame(f)
     }
     var pillOn = false
     func pill(_ on: Bool) {   // dictation is a pill the page sizes (a hidden one starts as the dot it grows from); the box gets its saved width back
@@ -2636,7 +2638,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let long = Date().timeIntervalSince(lastLongGreeting) > 3600   // the full greeting only after a break; otherwise a sub-second ack keeps it snappy
         guard let clip = greetingClip(long ? [dayPart()] : ["ack"]) else { return start(dictate: false) }
         if long { lastLongGreeting = Date() }
-        capsule(true); show()
+        show()
         let g = gen
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]
         p.terminationHandler = { [weak self] done in DispatchQueue.main.async {
@@ -2715,8 +2717,8 @@ final class App: NSObject, WKScriptMessageHandler {
             hide(after: 6); return
         }
         drawingReply = !dictate && drawing.active
-        let replying = drawingReply || retryOffer && !askFile.isEmpty
-        replyAgent = dictate || (retryOffer && !askFile.isEmpty) ? "" : agentCard
+        let replying = drawingReply || !askFile.isEmpty   // Zuka: with a card up, talking answers it ("yes, go ahead") instead of cancelling
+        replyAgent = dictate || !askFile.isEmpty ? "" : agentCard
         if !replying { if !dictate && !drawing.hasInput { drawing.clear() }; mini.reset(); try? FileManager.default.removeItem(atPath: focusFile) }   // a new ask: "show it" from the last one no longer counts
         guard !Prefs.bool("paused") else { dictating = false; return }
         dictating = dictate
@@ -2756,7 +2758,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if !dictate && (!replying || drawingReply) { unwarm(); warm = spawn() }
         hovering = false
         if dictate { js("listen", "dict") }
-        else if replying && !drawingReply { js("draft", "") } else { js("listen"); capsule(true); if let s = selection { js("selected", s.text) } }   // talking about a drawing still shows the listening orb
+        else if replying && !drawingReply { js("draft", "") } else { js("listen"); if let s = selection { js("selected", s.text) } }   // talking about a drawing still shows the listening orb
         show()
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             if replying { stopOfferInput() } else { hush() }; js("msg", "Allow Atticus in System Settings → Privacy & Security → Microphone."); hide(after: 6); return
@@ -2912,7 +2914,7 @@ final class App: NSObject, WKScriptMessageHandler {
         clickTalk = false; toggleTalk = false; quiet?.cancel()
         busy = true
         if dictating { cue("soundRelease"); js("finishing", dictateCleanup ? "Cleaning up…" : "") }
-        else if offerText == nil { capsule(false); warmedVoice = false; js("think") }   // card replies keep the response clock paused
+        else if offerText == nil { warmedVoice = false; js("think") }   // card replies keep the response clock paused
         let an = analyzer, rd = reading, next = nextAnalyzer
         nextReading?.cancel(); nextFeed = nil; nextAnalyzer = nil; nextReading = nil; nextSpeechInputID = nil; nextSpeechSegment = 0
         Task { await next?.cancelAndFinishNow() }
@@ -3236,7 +3238,7 @@ final class App: NSObject, WKScriptMessageHandler {
             drawing.hold()
             if busy { cancel() }
         }
-        if retryOffer && !askFile.isEmpty { js("respond", t); return }
+        if !askFile.isEmpty { js("respond", t); return }
         guard !busy, !engine.isRunning else { return }
         if ["report feedback", "report a bug"].contains(transcriptKey(t)) { Atticus.settings.open(tab:"feedback"); return }
         if selectionPending {
@@ -3332,7 +3334,9 @@ final class App: NSObject, WKScriptMessageHandler {
                         guard (3...6).contains(p.count) else { continue }
                         self.retryOffer = p.count >= 5 && p[4] == "retry"
                         self.askNeed = p.count == 6 && !self.retryOffer ? (try? JSONSerialization.jsonObject(with:Data(p[5].utf8))) as? [String:Any] ?? [:] : [:]
-                        self.askFile = p[2]; self.show(); self.js("ask", [p[0], p[1], self.retryOffer ? "retry" : "", self.retryOffer && p.count == 6 ? p[5] : ""]); continue
+                        self.askFile = p[2]; self.show(); self.js("ask", [p[0], p[1], self.retryOffer ? "retry" : "", self.retryOffer && p.count == 6 ? p[5] : ""])
+                        if self.askNeed.isEmpty { self.askAloud(p[0], p[1]) }
+                        continue
                     }
                     if line.hasPrefix("⚙ ") {   // "⚙ <key> <true|false>": the AI flips one of Atticus's switches; never pause, and Safe mode only on
                         let p = line.split(separator: " ").map(String.init)
@@ -3403,7 +3407,7 @@ final class App: NSObject, WKScriptMessageHandler {
         pointContext = nil; unpoint(false)
         if point != nil { js("point", false) }   // the mark went with this ask (its picture is in the bubble): the chip must not wait for the next one
         drawing.clearInput(); drawing.deselect(); mini.reset(); if !busy && !engine.isRunning { noteHidden() }; busy = true; agentMoveFile = ""; answer = ""; showAgent = ""; try? FileManager.default.removeItem(atPath: focusFile)
-        if !speculative { capsule(false); warmedVoice = false; js("think") }
+        if !speculative { warmedVoice = false; js("think") }
         if let w = warm, !w.p.isRunning { try? w.input.close(); warm = nil }
         if warm != nil && warmSel != selKey { unwarm() }   // spawned before the selection changed
         guard let w = warm ?? spawn() else {
@@ -3831,6 +3835,9 @@ final class AgentPanels: NSObject, WKScriptMessageHandler {
         ping = id
         app.show()
         app.pinned = true; app.agentCard = id; app.js("agentDone",row)   // seen once the user acts on it (dismissPing, open, or an ask/close over it in tick)
+        if let said = (row["summary"] as? String) ?? (row["result"] as? String), !said.isEmpty, row["spoken"] as? Bool != true {
+            rows[id]?["spoken"] = true; app.deliver(said)   // Zuka: a finished helper tells J out loud, like any answer
+        }
     }
     // A finish shows on its own chip, opened with its result; the box stays as the user left it. Seen once the user opens or hides it.
     func expand(_ id:String) {

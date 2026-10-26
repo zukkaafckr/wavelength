@@ -56,6 +56,7 @@ final class EngineStub{var isRunning=false}
 final class AppStub{
  let web=WKWebView()
  let panel=KeyPanel(contentRect:NSRect(x:40,y:40,width:340,height:120),styleMask:[.nonactivatingPanel,.borderless],backing:.buffered,defer:false)
+ func deliver(_ a:String,aloud:Bool=true,then:(()->Void)?=nil){}
  let mini=MiniScreen(),engine=EngineStub();var busy=false,composing=false,pinned=false,stuck=false,dragging=false,hovering=false,pillOn=false,gen=0,escRef:EventHotKeyRef?,agentCard=""
  var calls:[String]=[],defaultKeys:[EventHotKeyRef]=[],allowUntil=Date.distantPast,allowUserApp=false
  var askFile="",retryOffer=false,moveRef:EventHotKeyRef?
