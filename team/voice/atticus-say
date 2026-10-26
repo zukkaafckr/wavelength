@@ -8,9 +8,17 @@ import fcntl, json, os, re, socket, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SOCK = os.path.join(HERE, "voice.sock")
-PY = os.path.join(HERE, ".venv", "bin", "python")
-SERVER = os.path.join(HERE, "atticus_voice_server.py")
+# Light voice (Kokoro) by default; a file named "engine" next to this one containing "expressive" switches to Chatterbox.
+try: EXPRESSIVE = open(os.path.join(HERE, "engine")).read().strip() == "expressive"
+except OSError: EXPRESSIVE = False
+if EXPRESSIVE:
+    PY = os.path.join(HERE, ".venv", "bin", "python")
+    SERVER = os.path.join(HERE, "atticus_voice_server.py")
+else:
+    PY = os.path.expanduser("~/.local/share/kokoro/.venv/bin/python")
+    SERVER = os.path.join(HERE, "zuka_voice_light.py")
 LOG = os.path.expanduser("~/.config/atticus/voice.log")
+START_WAIT = 12     # seconds for her first words; slower than this, the Mac voice answers instead
 LOAD_WAIT = 40      # seconds to wait for a cold start (~25 s) before giving up to say
 MIN_FREE = 20       # % free memory below which a cold start is skipped: Premiere needs it more
 EXPORT_CPU = 150    # Premiere + Media Encoder CPU % above this counts as exporting
@@ -95,10 +103,16 @@ except OSError:
     if conn is None:
         siri()
 
-try:
+try:   # her voice must start within START_WAIT, else the Mac voice says it now (a swapped-out model can crawl)
+    conn.settimeout(START_WAIT)
     conn.sendall((json.dumps({"text": text}) + "\n").encode())
-    reply = conn.makefile("rb").readline()   # blocks until she finishes; Atticus terminating us cancels playback
-except OSError:
+    lines = conn.makefile("rb")
+    reply = lines.readline()
+    if reply == b"start\n":
+        conn.settimeout(120); reply = lines.readline()   # she is speaking; Atticus terminating us cancels playback
+except OSError:   # includes the timeout
     reply = b""
 if not reply:
+    try: conn.close()   # tells the engine to drop this request
+    except Exception: pass
     siri()

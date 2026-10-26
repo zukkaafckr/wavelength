@@ -2,7 +2,7 @@
 """Render greetings/lines.json into ~/.local/share/zuka/greetings/<part>-N.wav with the local voice.
 
 Needs the voice server running (the install's --voice step starts it). Reads the user's call-name from
-~/.config/atticus/settings.json (userCallName). Trims leading/trailing silence and speeds up 1.1x with ffmpeg.
+~/.config/atticus/settings.json (userCallName). Trims leading/trailing silence and speeds up with ffmpeg (1.1x, acks 1.12x).
 Skips cleanly when ffmpeg or the voice server is missing.
 """
 import json, os, shutil, socket, subprocess, sys, tempfile
@@ -32,6 +32,8 @@ def render(text, out):
 
 
 def main():
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__); return 0
     ffmpeg = FFMPEG if os.path.exists(FFMPEG) else shutil.which("ffmpeg")
     if not ffmpeg:
         print("ffmpeg not found (brew install ffmpeg): skipping greetings."); return 0
@@ -52,7 +54,7 @@ def main():
                     print(f"{part}-{n}: voice server error ({e}); stopping."); return 1
                 if not ok or not os.path.exists(raw):
                     print(f"{part}-{n}: no audio; skipped."); continue
-                r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", raw, "-af", f"{TRIM},atempo=1.1", final])
+                r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", raw, "-af", f"{TRIM},atempo={1.12 if part == 'ack' else 1.1}", final])
                 if r.returncode != 0:
                     shutil.copy(raw, final)   # trimming failed: keep the untouched clip
                 made += 1

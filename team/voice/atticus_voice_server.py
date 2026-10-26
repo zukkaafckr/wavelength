@@ -56,7 +56,8 @@ def sentences(text):
 
 
 FREE_MIN = 20   # % of RAM free below which the model gives its memory back
-BUSY = threading.Event()   # set while a request is being spoken or rendered
+BUSY = threading.Event()
+GEN = {"since": None}   # when the current sentence started rendering (watchdog: a swapped-out model crawls)   # set while a request is being spoken or rendered
 
 
 def memory_guard():
@@ -69,6 +70,12 @@ def memory_guard():
             out = subprocess.run(["/usr/bin/memory_pressure"], capture_output=True, text=True, timeout=5).stdout
             free = int(re.search(r"free percentage: (\d+)%", out)[1])
         except (OSError, TypeError, ValueError, subprocess.TimeoutExpired): continue
+        since = GEN["since"]
+        if since and time.time() - since > 40:   # one sentence for 40 s: the model was swapped to disk; a fresh start reloads it into memory
+            log("sentence stuck for 40 s (model swapped out): restarting")
+            try: os.unlink(SOCK)
+            except OSError: pass
+            os._exit(1)   # non-zero: the login agent starts a fresh engine
         strikes = strikes + 1 if free < FREE_MIN and not BUSY.is_set() else 0
         if strikes >= 2:
             log(f"only {free}% memory free: unloading")
@@ -89,7 +96,9 @@ def clip_for(model, conds, ta, s, e):
     if os.path.exists(path):
         os.utime(path); return path, True
     model.conds = conds[e]
-    ta.save(path + ".part.wav", model.generate(s), model.sr); os.replace(path + ".part.wav", path)
+    GEN["since"] = time.time()
+    try: ta.save(path + ".part.wav", model.generate(s), model.sr); os.replace(path + ".part.wav", path)
+    finally: GEN["since"] = None
     old = sorted((os.path.join(CACHE, f) for f in os.listdir(CACHE) if f.endswith(".wav") and not f.endswith(".part.wav")), key=os.path.getmtime)
     for f in old[:-CACHE_MAX]:
         try: os.unlink(f)
@@ -213,6 +222,9 @@ def serve(conn, model, conds, ta, tmp):
         t = time.time()
         path, hit = clip_for(model, conds, ta, s, e)   # cached clips are kept; only tmp/ is emptied after playback
         log(f"{e:8} {time.time() - t:4.1f}s {'[memory] ' if hit else ''} {s[:60]}")
+        if i == 0:
+            try: conn.sendall(b"start\n")   # the client's 12 s promise: her voice is coming
+            except OSError: pass
         clips.put(path)
     clips.put(None)
     th.join()

@@ -10,7 +10,7 @@ answers questions about what's on your screen. You choose its name (Zuka, Nova, 
 - **Your own assistant.** You name it and choose what it calls you; the app is Wavelength.
 - **Listening capsule.** A small dark capsule at the top of the screen with a moving voice ribbon. No big window, no text while you talk. It grows into a compact card only to answer.
 - **Greetings.** It says hello by time of day ("Good morning, Sam. All systems are up.") and then listens.
-- **Natural voice (optional).** Runs on your Mac and works offline once downloaded. Moods follow the line: upbeat for good news, calm for problems. Or use the free Mac voice.
+- **Natural voice (optional).** Light and fast, runs on your Mac and works offline once downloaded (about 350 MB, fine on 8 GB Macs). Moods follow the line: upbeat for good news, calm for problems. Optional extra-expressive greetings (+4 GB, best on 16 GB). Or use the free Mac voice.
 - **Works offline.** Opening apps, moving windows, playing music and your shortcuts need no internet or AI. Offline, it tells you what still works.
 - **Usage check.** Before anything that would use your Claude plan, it asks. Free commands never ask.
 - **Credit block.** Paid creative tools (Atria, Higgsfield) are blocked, so credits are never spent by accident.
@@ -19,9 +19,9 @@ answers questions about what's on your screen. You choose its name (Zuka, Nova, 
 
 ## What you need
 
-- A Mac with macOS 26 or newer (8 GB works; 16 GB is best for the natural voice)
+- A Mac with macOS 26 or newer (8 GB works, including the natural voice; 16 GB is best for the optional extra-expressive greetings)
 - [Claude Code](https://claude.com/claude-code), signed in to your Claude plan
-- An invite to this private repo, and about 4 GB free if you want the natural voice
+- An invite to this private repo, and about 1 GB free if you want the natural voice (5 GB more for the extra-expressive greetings)
 
 ## Install
 
