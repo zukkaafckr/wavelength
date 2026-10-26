@@ -4482,6 +4482,22 @@ final class Delegate: NSObject, NSApplicationDelegate {
         MeetingArchive.writes.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
     }
+    // wavelength://listen opens the box listening, hands-free (a pause ends it), so a spoken phrase can start her:
+    // macOS Vocal Shortcuts ("Hey Zuka") → a Shortcut that opens this link. wavelength://ask?text=… asks in words.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme?.lowercased() == "wavelength" && !Prefs.bool("paused") {
+            switch url.host?.lowercased() {
+            case "listen":
+                if meeting.running { meeting.focus(); continue }
+                guard !app.engine.isRunning else { continue }
+                app.clickTalk = true; app.start(); if !app.engine.isRunning { app.clickTalk = false }
+            case "ask":
+                if let t = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value,
+                   !t.trimmingCharacters(in: .whitespaces).isEmpty, !app.busy { app.show(); app.typed(t) }
+            default: break
+            }
+        }
+    }
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
         UserDefaults.standard.bool(forKey: "onboarded") ? settings.open() : onboarding.open()
         return false

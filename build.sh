@@ -33,6 +33,7 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>AtticusSource</key><string>$(pwd)</string>
 <key>LSUIElement</key><true/>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>Wavelength</string><key>CFBundleURLSchemes</key><array><string>wavelength</string></array></dict></array>
 <key>NSMicrophoneUsageDescription</key><string>Atticus listens when you use its shortcut or microphone button.</string>
 <key>NSAppleEventsUsageDescription</key><string>Atticus controls apps like Finder, Chrome and Music when you ask it to.</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>Atticus reads your calendar, adds events you request, and asks before moving or deleting existing events. Calendar details are sent to your chosen AI model.</string>
