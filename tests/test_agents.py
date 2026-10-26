@@ -686,7 +686,7 @@ class AgentTests(unittest.TestCase):
         settings=json.loads(args[args.index('--settings')+1]);self.assertTrue(settings['sandbox']['enabled'])
         self.assertEqual(settings['hooks']['PreToolUse'][0]['matcher'],'.*');self.assertNotIn('disableAllHooks',settings)
         self.assertIn('Write,Edit',args[args.index('--tools')+1]);self.assertIn('mcp__fixture__inspect',args[args.index('--tools')+1])
-        self.assertEqual(args[args.index('--permission-mode')+1],'dontAsk')
+        self.assertEqual(args[args.index('--permission-mode')+1],'bypassPermissions')   # Zuka: the gate decides, see spawn()
 
     def test_agent_model_uses_its_own_router_model_and_explicit_credentials(self):
         for mode, model in (('cheapest','haiku'), ('balanced','sonnet'), ('capable','opus')):

@@ -35,6 +35,7 @@ DEFAULTS = {
     'startDay': {'sites': ['gmail'], 'apps': [], 'openTaskFolder': False},
     'editMode': {'apps': [], 'openTaskFolder': False},
     'tasks': None,     # None = task folders not set up
+    'music': 'top hits mix',   # what "play a song" puts on when no song is named (YouTube search words)
 }
 TASK_DEFAULTS = {'folder': None, 'nameFormat': '{date}_{batch}_{name}_{type}', 'dateFormat': '%d%b%y',
                  'types': {}, 'defaultType': 'Video', 'subfolders': [], 'exports': {}}
@@ -97,6 +98,7 @@ def _workflow():
     w = copy.deepcopy(DEFAULTS)
     b = data.get('browser')
     w['browser'] = b.strip() if isinstance(b, str) and b.strip() else _default_browser()
+    if isinstance(data.get('music'), str) and data['music'].strip(): w['music'] = data['music'].strip()
     tools = data.get('tools')
     if isinstance(tools, dict):
         w['tools'] = {str(k).lower().strip(): [v[0], v[1]] for k, v in tools.items()

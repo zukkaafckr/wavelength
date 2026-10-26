@@ -151,12 +151,20 @@ class NativeTests(unittest.TestCase):
         self.assertIn('p.arguments = ["--warm", "--", partial]', SWIFT)
 
     def test_youtube_play_is_free_and_instant(self):
+        played = []
+        with patch.object(atticus, 'youtube_play', lambda q: played.append(q) or 'ok'), patch.object(atticus, 'play', lambda n, anything=True: None):
+            for said, want in (('Just open YouTube for me and play a song.', None), ('open youtube and play arijit singh', 'arijit singh'),
+                               ('play kesariya on youtube', 'kesariya'), ('play a song', None), ('play some music', None),
+                               ('play believer', 'believer'), ('can you play tum hi ho please', 'tum hi ho')):
+                played.clear(); self.assertEqual(atticus.fast(said), 'ok', said); self.assertEqual(played, [want], said)
+        with patch('zuka_commands._workflow', return_value={'music': 'lofi mix'}), patch.object(atticus, 'youtube_tab', return_value=True), \
+             patch('urllib.request.urlopen', side_effect=OSError):
+            self.assertIn('lofi mix', atticus.youtube_play(None))   # nothing named: their usual music, it just plays
+
+    def test_helpers_are_gated_by_zuka_not_refused_by_dont_ask(self):
         src = (ROOT / 'atticus.py').read_text()
-        self.assertIn('return youtube_play(None if re.fullmatch', src)
-        self.assertLess(src.index('return youtube_play('), src.index("m = re.fullmatch(r'play (?:my |the )?(?:spotify )?"))   # before the Spotify rule
-        with patch('atticus.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='new')) as run:
-            self.assertIn('Which song', atticus.youtube_play(None))
-            self.assertEqual(run.call_args[0][0][-1], 'https://www.youtube.com/')   # Brave, reusing a YouTube tab
+        self.assertIn("'--permission-mode', 'bypassPermissions', '--disallowedTools', *DENY,", src)
+        self.assertIn("f'/bin/sh \"{ME}\" --gate || exit 2'", src)   # a gate that fails to answer blocks the step
 
     def test_quiet_agents_still_ask_for_risky_steps(self):
         src = (ROOT / 'atticus.py').read_text()

@@ -717,7 +717,7 @@ OUTWARD = ('Delete something?', 'Send this?', 'Buy this?')   # Zuka: the only st
 def grant(on=True):
     """Zuka: J said "go ahead" to a Claude task: its steps run without a card each (45 min, renewed by every go-ahead)."""
     try:
-        if on: Path(GRANT).touch()
+        if on and pref('usageCheck', False): Path(GRANT).touch()   # only with the usage check: without it there is no go-ahead to remember
         else: os.remove(GRANT)
     except OSError: pass
 
@@ -1506,9 +1506,11 @@ def youtube_tab(url):
 
 def youtube_play(query):
     """Zuka: the first YouTube result for the words, opened in the browser to play. Free and instant: one page fetch, no AI."""
-    if not query:
-        youtube_tab('https://www.youtube.com/')
-        return 'YouTube is open. Which song, J? Say "play" and the name, and I\'ll put it on.'
+    if not query:   # nothing named: their usual music (workflow.json "music"), so it just plays
+        import zuka_commands
+        query = (zuka_commands._workflow().get('music') or 'top hits mix').strip()
+        said = youtube_play(query)
+        return said and said + ' Say "play" and a name for something else.'
     url = 'https://www.youtube.com/results?search_query=' + urllib.parse.quote_plus(query)
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh)', 'Accept-Language': 'en'})
@@ -2191,15 +2193,20 @@ def fast(text):
             return None
         fast.cmds = [f'{SHOW} --bg {shlex.quote(target)}']
         return f'Searched {query}' + (f' on {site[1]}.' if site else '.')
-    m = re.search(r'(?:^|\b)(?:(?:open|go to|on) youtube and )?play (?:the song |song |the video |video )?(.+?) (?:on|in|from) youtube\b'
-                  r'|(?:open|go to) youtube and play (?:the song |song |the video |video )?(.+)', t)   # Zuka: free and instant, no AI; small talk before it is fine
-    if m:
-        what = m[1] or m[2]
-        return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a)? ?(?:song|music|video|something)', what) else what)
+    music = re.sub(r'\b(?:just|please|for me|can you|could you|would you|will you|kindly|quickly|now)\b', ' ', t)
+    music = ' '.join(music.split())
+    m = re.search(r'\bplay (?:me )?(?:the song |song |the video |video )?(.+?)(?: (?:on|in|from) youtube)?$', music) if 'youtube' in music else None
+    if m or re.fullmatch(r'(?:open |go to )?youtube(?: and)? (?:play|put on|start)(?: (?:a|some|any|me a|me some))? ?(?:song|songs|music|video|something)?', music):
+        what = m[1] if m else ''   # Zuka: anything with "youtube" and "play" is free and instant, no AI, however it's worded
+        return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a|me some)? ?(?:song|songs|music|video|something|anything|a song)?', what) else what)
+    if re.fullmatch(r'(?:play|put on|start) (?:a |some |any |me a |me some )?(?:song|songs|music|something)(?: for me)?', music):
+        return youtube_play(None)   # Zuka: "play a song" plays something now (free); "play X" names it
     m = re.fullmatch(r'play (?:my |the )?(?:spotify )?(?:playlist )?(?:called |named )?(.+?)( playlist)?( on spotify)?', t)
     if m and not DEICTIC.search(m[1]) and not MORE.search(m[1]):   # "play X" alone may mean a video: only the user's playlist here, anything else goes to the AI (which uses --play)
         reply = play(m[1], anything=bool(m[3]))
         if reply and reply.startswith('Playing '): fast.cmds = [f'{PLAY} {shlex.quote(m[1])}']
+        if not reply and not m[3] and os.environ.get('ATTICUS_LIVE') != '1':
+            return youtube_play(m[1])   # Zuka: not one of their playlists: the song on YouTube, free, never Claude
         return reply
     m = re.fullmatch(r'(?:add|put) (.+?) (?:to|in|on) (?:my |the )?(?:spotify )?queue|queue (.+?)(?: next)?', t)
     name = (m[1] or m[2]).removeprefix('the song ').removeprefix('song ') if m else ''
@@ -5199,7 +5206,8 @@ def start_claude(model=None, agent=None):
             with open(os.path.join(DIR, 'agent-connectors.json')) as f: connectors = json.load(f)
             settings['deniedMcpServers'] = [{'serverName': c['name']} for c in connectors if not any(n.startswith(c['prefix']) or n == c['prefix'].rstrip('_') for n in agent['connectors'])]
         except (OSError, ValueError, KeyError): pass
-    settings['hooks'] = {'PreToolUse': [{'matcher': '.*', 'hooks': [{'type': 'command', 'command': f'/bin/sh "{ME}" --gate', 'timeout': 660 if agent else 140}]}]}
+    # the gate decides every tool call; if it ever fails to answer, exit 2 blocks the step (never fails open)
+    settings['hooks'] = {'PreToolUse': [{'matcher': '.*', 'hooks': [{'type': 'command', 'command': f'/bin/sh "{ME}" --gate || exit 2', 'timeout': 660 if agent else 140}]}]}
     errors = tempfile.TemporaryFile(mode='w+')   # draining a pipe only after wait() can deadlock
     flags = ['--resume', agent['session']] if agent and agent.get('session') else []
     flags += ['--include-partial-messages'] + ([] if agent else ['--no-session-persistence', '--strict-mcp-config'])
@@ -5220,7 +5228,7 @@ def start_claude(model=None, agent=None):
         if agent.get('connectors'): tools += ',' + ','.join(agent['connectors'])
     try:
         p = subprocess.Popen([claude, '-p', '--input-format', 'stream-json', '--model', model or main_model(), '--effort', 'low', '--system-prompt', system,
-                              '--tools', tools, '--permission-mode', 'dontAsk' if agent else 'bypassPermissions', '--disallowedTools', *DENY,
+                              '--tools', tools, '--permission-mode', 'bypassPermissions', '--disallowedTools', *DENY,   # Zuka: "dontAsk" refused the helpers' own unsandboxed commands before the gate could allow them; the gate + DENY decide instead
                               '--settings', json.dumps(settings), '--setting-sources', '', '--output-format', 'stream-json', '--verbose', *flags],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, cwd=ask if agent else tempfile.gettempdir(), start_new_session=True, env=env)
     except BaseException:
