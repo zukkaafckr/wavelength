@@ -1,0 +1,5 @@
+Wavelength is built on Atticus by SaarthurR (https://github.com/SaarthurR/atticus-mac), released under the MIT License.
+The Atticus portions stay under MIT: see LICENSE and LICENSE-Plip.
+Wavelength's own additions (renameable assistant, voice ribbon and listening capsule, spoken greetings and check-ins,
+offline answers, usage check, credit block, local natural voice, the Wavelength name, icon and Settings look, and
+everything in team/) are private: see LICENSE-WAVELENGTH.

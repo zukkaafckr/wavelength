@@ -1,0 +1,96 @@
+#!/usr/bin/python3 -I
+"""Drop-in for /usr/bin/say used by Atticus: speaks with the Chatterbox voice server.
+
+Same arguments as say (the words come after "--"). Stays quiet while Premiere or Media Encoder is busy
+exporting, starts the server when it isn't running, and falls back to say if the server can't answer.
+"""
+import fcntl, json, os, re, socket, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SOCK = os.path.join(HERE, "voice.sock")
+PY = os.path.join(HERE, ".venv", "bin", "python")
+SERVER = os.path.join(HERE, "atticus_voice_server.py")
+LOG = os.path.expanduser("~/.config/atticus/voice.log")
+LOAD_WAIT = 40      # seconds to wait for a cold start (~25 s) before giving up to say
+MIN_FREE = 20       # % free memory below which a cold start is skipped: Premiere needs it more
+EXPORT_CPU = 150    # Premiere + Media Encoder CPU % above this counts as exporting
+
+args = sys.argv[1:]
+text = " ".join(args[args.index("--") + 1:]) if "--" in args else (args[-1] if args else "")
+
+
+def siri():
+    os.execv("/usr/bin/say", ["say"] + args)
+
+
+def exporting():
+    try:
+        out = subprocess.run(["/bin/ps", "-Ao", "%cpu=,comm="], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return False
+    busy = 0.0
+    for line in out.splitlines():
+        cpu, _, comm = line.strip().partition(" ")
+        if "Adobe Premiere Pro" in comm or "Adobe Media Encoder" in comm:
+            try: busy += float(cpu)
+            except ValueError: pass
+    return busy > EXPORT_CPU
+
+
+def low_memory():
+    try:
+        out = subprocess.run(["/usr/bin/memory_pressure"], capture_output=True, text=True, timeout=3).stdout
+        return int(re.search(r"free percentage: (\d+)%", out)[1]) < MIN_FREE
+    except Exception:
+        return False
+
+
+def loading():
+    """Another engine holds the lock (it is still loading): wait for it instead of starting a second copy."""
+    try:
+        with open(os.path.join(HERE, "voice.lock"), "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(f, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+
+
+def connect():
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SOCK)
+    return s
+
+
+if not text.strip():
+    sys.exit(0)
+if exporting():
+    sys.exit(0)   # text only while an export runs: the voice would steal its CPU
+
+try:
+    conn = connect()
+except OSError:
+    if not os.path.exists(PY):
+        siri()
+    busy_loading = loading()
+    if not busy_loading and low_memory():
+        siri()   # loading 650 MB now would squeeze Premiere; the Mac voice answers this once
+    with open(LOG, "a") as log:
+        server = None if busy_loading else subprocess.Popen([PY, "-I", SERVER], stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                                                         start_new_session=True, env={**os.environ, "TQDM_DISABLE": "1"})
+    conn, deadline = None, time.time() + LOAD_WAIT
+    while time.time() < deadline and (server is None or server.poll() is None):   # a server that died won't come up: say at once
+        time.sleep(0.5)
+        try:
+            conn = connect(); break
+        except OSError:
+            pass
+    if conn is None:
+        siri()
+
+try:
+    conn.sendall((json.dumps({"text": text}) + "\n").encode())
+    reply = conn.makefile("rb").readline()   # blocks until she finishes; Atticus terminating us cancels playback
+except OSError:
+    reply = b""
+if not reply:
+    siri()

@@ -1,0 +1,21 @@
+{
+  "morning": [
+    "Good morning, {user}. All systems are up. What's first today?",
+    "Morning, {user}. Coffee's on you, the rest is on me. Where do we start?",
+    "Good morning, {user}. I'm online and ready when you are."
+  ],
+  "afternoon": [
+    "Good afternoon, {user}. What are we working on?",
+    "Welcome back, {user}. Shall we pick up where we left off?",
+    "At your service, {user}. What do you need?"
+  ],
+  "evening": [
+    "Good evening, {user}. Still building? I'm right here.",
+    "Evening, {user}. What can I take off your plate?",
+    "Welcome back, {user}. Let's finish strong. What's next?"
+  ],
+  "night": [
+    "Burning the midnight oil, {user}? I'm with you. What do you need?",
+    "Still up, {user}? Let's keep it quick. What's the mission?"
+  ]
+}

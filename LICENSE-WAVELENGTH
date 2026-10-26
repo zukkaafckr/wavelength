@@ -1,0 +1,14 @@
+Wavelength additions: private licence
+
+Copyright (c) 2026 J. All rights reserved.
+
+This covers everything Wavelength adds on top of Atticus: the files in team/, the voice samples and greetings,
+the Wavelength name, icon and visual design, and every change made to the Atticus source in this repository.
+
+You may install and use Wavelength only if you were invited to this private repository, and only for your own work
+within the team. You may not publish, share, sell, sublicense or redistribute it, or any copy or adapted version of it,
+outside the team without written permission from the copyright holder.
+
+The original Atticus code remains under its MIT License (see LICENSE). Nothing here limits your rights to that code.
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
