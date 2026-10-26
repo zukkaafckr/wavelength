@@ -1647,11 +1647,14 @@ def installed_apps():
         return _APPS_CACHE[1]
     fallback = {f[:-4] for d in ('/Applications', '/System/Applications', '/System/Applications/Utilities', '/System/Library/CoreServices', HOME + '/Applications')
                 if os.path.isdir(d) for f in os.listdir(d) if f.endswith('.app')}
+    for d in ('/Applications', HOME + '/Applications'):   # Zuka: apps kept in their own folder ("Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app")
+        try: fallback |= {f[:-4] for sub in os.scandir(d) if sub.is_dir() and not sub.name.endswith('.app') and not re.search(r'(?i)\bapps(\.localized)?$', sub.name) for f in os.listdir(sub.path) if f.endswith('.app')}
+        except OSError: pass
     try:
         search = subprocess.Popen(['mdfind', 'kMDItemContentType == "com.apple.application-bundle"'],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         found, _ = search.communicate(timeout=.08)
-        apps = {Path(path).stem for path in (found or '').splitlines() if path.rstrip('/').endswith('.app')} if not search.returncode else set()
+        apps = {Path(path).stem for path in (found or '').splitlines() if path.rstrip('/').endswith('.app') and not re.search(r'(?i)apps(\.localized)?/[^/]+\.app/?$', path)} if not search.returncode else set()   # Zuka: browser web apps (YouTube in "Brave Browser Apps") are sites
     except subprocess.TimeoutExpired:
         search.kill(); search.communicate()
         apps = set()
@@ -1680,7 +1683,7 @@ def app_named(words):
     def runs(a):
         ws = a.split()
         return {key(' '.join(ws[i:j])) for i in range(len(ws)) for j in range(i + 1, len(ws) + 1)}
-    hits = [a for a in apps if key(w) in runs(a)]
+    hits = [a for a in apps if key(w) in runs(a) and not re.match(r'(?i)(un)?install|.* (un)?installer$|.* helper$', a)]   # "Uninstall Adobe Premiere Pro" is not Premiere
     stem = lambda a: re.sub(r'\s*\d{4}$', '', a)   # "Adobe Premiere Pro 2025" and "... 2026" are one app in two versions
     return sorted(hits)[-1] if hits and len({stem(a) for a in hits}) == 1 else None
 

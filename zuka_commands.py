@@ -36,6 +36,7 @@ DEFAULTS = {
     'editMode': {'apps': [], 'openTaskFolder': False},
     'tasks': None,     # None = task folders not set up
     'music': 'top hits mix',   # what "play a song" puts on when no song is named (YouTube search words)
+    'keepOpen': ['Claude'],    # apps "close all apps" / "done for the day" leave running (the assistant and Finder always stay)
 }
 TASK_DEFAULTS = {'folder': None, 'nameFormat': '{date}_{batch}_{name}_{type}', 'dateFormat': '%d%b%y',
                  'types': {}, 'defaultType': 'Video', 'subfolders': [], 'exports': {}}
@@ -99,6 +100,7 @@ def _workflow():
     b = data.get('browser')
     w['browser'] = b.strip() if isinstance(b, str) and b.strip() else _default_browser()
     if isinstance(data.get('music'), str) and data['music'].strip(): w['music'] = data['music'].strip()
+    if isinstance(data.get('keepOpen'), list): w['keepOpen'] = [x for x in data['keepOpen'] if isinstance(x, str)]
     tools = data.get('tools')
     if isinstance(tools, dict):
         w['tools'] = {str(k).lower().strip(): [v[0], v[1]] for k, v in tools.items()
@@ -539,6 +541,85 @@ def _voice_list():
     now = _pick().get('pick', 'warm')
     names = [v + (" (that's me now)" if k == now else '') for k, v in VOICES.items()]
     return "I can sound " + ', '.join(names[:-1]) + ', or ' + names[-1] + ". Say try, and the name."
+
+
+# ---- end of the day: "close all apps", "we're done for the day", "shut down"
+KEEP_IDS = {'com.atticus.app', 'com.apple.finder'}   # the assistant itself, and Finder (macOS keeps it running)
+SHUTDOWN_FILE = os.path.expanduser('~/.config/atticus/shutdown-offer.json')
+_CLOSE_ALL = re.compile(r"^(?:please )?(?:close|quit|shut) (?:all|everything|every app|all (?:of )?(?:the |my )?(?:running |open |opened )?(?:apps|applications|programs|windows))"
+                        r"(?: (?:that are |which are )?(?:running|open|opened))?(?: (?:in the background|behind|on the mac|on my mac))?$|^close everything down$")
+_DONE_DAY = re.compile(r"\bdone for (?:the day|today)\b|\bcall it a day\b|\bwrap (?:it )?up for (?:the day|today)\b|\bend of (?:the )?day\b|\blog(?:ging)? off for (?:the day|today)\b")
+_SHUTDOWN = re.compile(r"^(?:please )?(?:shut ?down|turn off|power off|power down)(?: (?:the|my) (?:mac|computer|laptop|system))?(?: now)?$")
+_YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|yes please|yes shut (?:it )?down|shut (?:it )?down|please do)$")
+
+
+def _running_apps():
+    """[(name, bundle id)] of apps with a Dock icon, as System Events lists them."""
+    out = _osa('tell application "System Events"\nset r to ""\nrepeat with p in (every process whose background only is false)\n'
+               'set r to r & (name of p) & tab & (bundle identifier of p) & linefeed\nend repeat\nreturn r\nend tell')
+    return [tuple(l.split('\t', 1)) for l in (out or '').splitlines() if '\t' in l]
+
+
+def _close_all():
+    """Ask every app to quit (never force), wait for them; -> (closed names, still open names)."""
+    keep = {k.lower() for k in _workflow().get('keepOpen', ['Claude'])}
+    targets = [(n, b) for n, b in _running_apps() if b not in KEEP_IDS and n.lower() not in keep and b != 'missing value']
+    for n, b in targets:
+        _osa(f'ignoring application responses\ntell application id "{b}" to quit\nend ignoring')
+    left = targets
+    for _ in range(40):   # up to 20 s: apps with unsaved work show a save prompt and stay
+        running = {b for _, b in _running_apps()}
+        left = [(n, b) for n, b in targets if b in running]
+        if not left: break
+        time.sleep(0.5)
+    return [n for n, b in targets if (n, b) not in left], [n for n, _ in left]
+
+
+def _and_list(xs):
+    xs = list(xs)
+    return xs[0] if len(xs) == 1 else ', '.join(xs[:-1]) + ' and ' + xs[-1]
+
+
+def _close_reply(closed, left):
+    said = (f"Closed {_and_list(closed[:4])}" + (f" and {len(closed) - 4} more" if len(closed) > 4 else '') + '.') if closed else "Nothing else was open."
+    if left: said += f" {_and_list(left)} {'is' if len(left) == 1 else 'are'} asking to save, so I left {'it' if len(left) == 1 else 'them'} open."
+    return said
+
+
+def _offer_shutdown():
+    try:
+        os.makedirs(os.path.dirname(SHUTDOWN_FILE), exist_ok=True)
+        with open(SHUTDOWN_FILE, 'w') as f: json.dump({'at': time.time()}, f)
+    except OSError: pass
+
+
+def _shutdown_offered():
+    try:
+        with open(SHUTDOWN_FILE) as f: at = json.load(f).get('at', 0)
+        os.remove(SHUTDOWN_FILE)
+        return time.time() - at <= 90
+    except (OSError, ValueError, AttributeError): return False
+
+
+def _shut_down():
+    _osa('tell application "System Events" to shut down')   # the normal Shut Down: apps still asking to save stop it, nothing is forced
+    return "Shutting down. Good night, J."
+
+
+def _end_of_day(t):
+    if _YES.match(t) and _shutdown_offered():
+        return _shut_down()
+    if _DONE_DAY.search(t):
+        closed, left = _close_all()
+        if left: return _close_reply(closed, left) + " Save those and say shut down when you're ready."
+        _offer_shutdown()
+        return "Good work today, J. " + _close_reply(closed, left) + " Shut down the Mac too?"
+    if _CLOSE_ALL.match(t):
+        return _close_reply(*_close_all())
+    if _SHUTDOWN.match(t):
+        _offer_shutdown()
+        return "Shut down the Mac, J? Unsaved work stops it. Say yes to go ahead."
+    return None
 
 
 # ---- calendar
@@ -1458,6 +1539,9 @@ def handle(t):
         t = _norm(t)
         if not t:
             return None
+        said = _end_of_day(t)
+        if said:
+            return said
         if _START.match(t):
             return _start_day()
         m = _NEWTASK.match(t)

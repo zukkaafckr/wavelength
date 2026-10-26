@@ -162,7 +162,7 @@ class NativeTests(unittest.TestCase):
             self.assertIn('lofi mix', atticus.youtube_play(None))   # nothing named: their usual music, it just plays
 
     def test_apps_open_by_any_whole_word_of_their_name(self):
-        apps = {'Brave Browser', 'Adobe Premiere Pro 2025', 'Adobe Premiere Pro 2026', 'Adobe Media Encoder 2026', 'Notes', 'Final Cut Pro', 'Logic Pro'}
+        apps = {'Brave Browser', 'Uninstall Adobe Premiere Pro 2026', 'Adobe Premiere Pro 2025', 'Adobe Premiere Pro 2026', 'Adobe Media Encoder 2026', 'Notes', 'Final Cut Pro', 'Logic Pro'}
         with patch.object(atticus, 'installed_apps', return_value=apps):
             self.assertEqual(atticus.app_named('brave'), 'Brave Browser')
             self.assertEqual(atticus.app_named('premiere'), 'Adobe Premiere Pro 2026')   # the newest version

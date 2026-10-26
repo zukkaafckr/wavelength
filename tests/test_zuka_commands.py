@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import sys
 import tempfile
@@ -790,3 +791,46 @@ class Inbox(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EndOfDay(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.apps = [('Brave Browser', 'com.brave.Browser'), ('Claude', 'com.anthropic.claudefordesktop'), ('Finder', 'com.apple.finder'),
+                     ('Premiere', 'com.adobe.PremierePro.26'), ('Mail', 'com.apple.mail')]
+        self.quit, self.stuck, self.osa = [], set(), []
+        def osa(script, timeout=8):
+            self.osa.append(script)
+            m = re.search(r'application id "([^"]+)" to quit', script)
+            if m: self.quit.append(m[1])
+            return ''
+        self.p = [mock.patch.object(z, 'SHUTDOWN_FILE', os.path.join(self.d, 'sd.json')), mock.patch.object(z, '_osa', osa),
+                  mock.patch.object(z, '_running_apps', lambda: [a for a in self.apps if a[1] not in self.quit or a[1] in self.stuck]),
+                  mock.patch.object(z, '_workflow', lambda: {**z.DEFAULTS, 'browser': 'Brave Browser', 'keepOpen': ['Claude']}), mock.patch.object(z, 'OFFER_FILE', os.path.join(tempfile.mkdtemp(), 'o.json')), mock.patch.object(z.time, 'sleep', lambda s: None)]
+        for x in self.p: x.start()
+
+    def tearDown(self):
+        for x in self.p: x.stop()
+
+    def test_close_all_keeps_the_assistant_finder_and_kept_apps(self):
+        said = z.handle('close all the running applications')
+        self.assertEqual(sorted(self.quit), ['com.adobe.PremierePro.26', 'com.apple.mail', 'com.brave.Browser'])
+        self.assertTrue(said.startswith('Closed Brave Browser, Premiere and Mail.'), said)
+
+    def test_unsaved_work_stays_open_and_blocks_shutdown(self):
+        self.stuck = {'com.adobe.PremierePro.26'}
+        said = z.handle('close all apps we are done for the day')
+        self.assertIn('Premiere is asking to save, so I left it open.', said)
+        self.assertIsNone(z.handle('yes'))   # no shutdown offered while work is unsaved
+        self.assertFalse(any('shut down' in s for s in self.osa))
+
+    def test_done_for_the_day_offers_shutdown_and_yes_does_it(self):
+        self.assertIn('Shut down the Mac too?', z.handle("we're done for the day"))
+        self.assertIn('Shutting down', z.handle('yes'))
+        self.assertTrue(any('to shut down' in s for s in self.osa))
+
+    def test_shutdown_always_asks_and_a_stale_yes_does_nothing(self):
+        self.assertIn('Say yes', z.handle('shut down the mac'))
+        with open(z.SHUTDOWN_FILE, 'w') as f: json.dump({'at': time.time() - 600}, f)
+        self.assertIsNone(z.handle('yes'))
+        self.assertFalse(any('to shut down' in s for s in self.osa))

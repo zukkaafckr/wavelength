@@ -24,6 +24,8 @@ Everything is theirs: nothing from the person who shared this repo (their name, 
     - the apps for "edit mode" (Premiere Pro, After Effects, CapCut, DaVinci...),
     - where their project folders live, how they name them, and which subfolders a new one gets (or none: they can skip task folders),
     - where their exports go inside a project (for "export check").
+    - what music "play a song" should put on when they don't name one (e.g. "Arijit Singh mix"),
+    - which apps must stay open when they say "close all apps" or "we're done for the day" (default: the Claude app). "Done for the day" closes everything else and then asks before shutting down.
     Write the answers to `~/.config/atticus/workflow.json` after install, starting from `workflow.example.json` in the repo (keep its keys; leave out anything they skipped so the defaults apply). Never copy another person's workflow file.
 
 Name and call-name: letters, numbers, spaces and hyphens only. If they want an accent or an apostrophe, suggest the plain spelling.
