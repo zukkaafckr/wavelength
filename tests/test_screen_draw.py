@@ -567,7 +567,7 @@ class NativeDrawingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = (ROOT/'Atticus.swift').read_text()
-            drawing = source[source.index('// Screen drawings use Quartz'):source.index('// The box can take typing')]
+            drawing = 'let sayHelper: String? = nil\n' + source[source.index('// Screen drawings use Quartz'):source.index('// The box can take typing')]
             (root/'main.swift').write_text(HARNESS.replace('__DRAWING__',drawing))
             result = subprocess.run(['swiftc',str(root/'main.swift'),'-o',str(root/'fixture')],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
@@ -769,5 +769,5 @@ class GuideGeometryTests(unittest.TestCase):
     def test_marks_and_callouts_stay_clear_of_targets(self):
         from tests import run_swift
         source = (ROOT/'Atticus.swift').read_text()
-        drawing = source[source.index('// Screen drawings use Quartz'):source.index('// The box can take typing')]
+        drawing = 'let sayHelper: String? = nil\n' + source[source.index('// Screen drawings use Quartz'):source.index('// The box can take typing')]
         self.assertIn('Guide geometry',run_swift(self,GEOMETRY.replace('__DRAWING__',drawing),timeout=20))

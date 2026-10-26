@@ -197,7 +197,7 @@ enum Prefs {
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
-        "assistantName": "Zuka", "userCallName": "J", "echoCancel": false]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
+        "assistantName": "Zuka", "userCallName": "J", "echoCancel": false, "wakeWord": false]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
         "meetingNudge", "meetingDetect", "meetingAuto", "fixSetup", "dictateLearn"]
@@ -529,6 +529,10 @@ func spoken(_ answer: String) -> String {
     return s.replacingOccurrences(of: #"(?m)^#{1,4}\s+"#, with: "", options: .regularExpression).replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
 }
 
+// The packaged Wavelength.app carries its own Python, voice model and voice scripts in Contents/Resources/runtime; the dev build has none and uses what is installed.
+let runtimeDir: String? = Bundle.main.resourcePath.map { $0 + "/runtime" }.flatMap { FileManager.default.isExecutableFile(atPath: $0 + "/python/bin/python3") ? $0 : nil }
+let agentLabel = runtimeDir != nil ? "com.wavelength.app" : "com.atticus.app"
+let sayHelper: String? = [runtimeDir.map { $0 + "/voice/atticus-say" }, NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"].compactMap { $0 }.first { FileManager.default.isExecutableFile(atPath: $0) }
 // Read-aloud uses the Mac's Spoken Content voice, and most people never pick one: switch it to Siri's once available.
 var siriVoiceTrying = false
 func siriVoice() {
@@ -587,7 +591,7 @@ let usableReadAloudVoice: String? = {
     p.waitUntilExit()
     return installedReadAloudVoice.flatMap { p.terminationStatus == 0 ? sayVoiceName($0.name, names: names) : nil }
 }()
-let zukaVoice = FileManager.default.isExecutableFile(atPath: NSHomeDirectory() + "/.local/share/chatterbox/atticus-say")
+let zukaVoice = sayHelper != nil
 func readAloudArguments(_ words: String, compactTip: () -> Void) -> [String] {
     if zukaVoice { return ["--", words] }   // Zuka's own voice: skip the system voice scan (`say -v ?` takes ~20 s on this Mac and froze the first reply)
     guard !UserDefaults.standard.bool(forKey: "siriVoice"), !siriVoiceTrying else { return ["--", words] }
@@ -668,6 +672,7 @@ func py(_ args: [String], _ extra: [String: String] = [:]) -> Process {
     p.arguments = [dir + "/atticus.py"] + args
     var env = ProcessInfo.processInfo.environment
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+    if let rt = runtimeDir { env["PATH"] = rt + "/python/bin:" + env["PATH"]!; env["WAVELENGTH_RUNTIME"] = rt }   // packaged app: its own Python first
     env["ATTICUS_APP"] = Bundle.main.executablePath
     env.merge(extra) { $1 }
     p.environment = env
@@ -1545,7 +1550,7 @@ final class ScreenDrawing {
             showCallout(words,step:index+1,total:r.steps.count,marks:marks.isNull ? shapeBounds(shapes) ?? target.bounds : marks,avoid:earlier + (hit.map { [$0] } ?? []))
         }
         if !words.isEmpty, speechEnabled() {
-            let p = Process(); p.executableURL = URL(fileURLWithPath:({ let h = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"; return FileManager.default.isExecutableFile(atPath: h) ? h : "/usr/bin/say" }())); p.arguments = sayArguments(words)
+            let p = Process(); p.executableURL = URL(fileURLWithPath:(sayHelper ?? "/usr/bin/say")); p.arguments = sayArguments(words)
             try? p.run(); voice = p
         }
         let top = NSScreen.screens.first?.frame.maxY ?? 0
@@ -1986,7 +1991,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if Prefs.bool("speak") && aloud {
             let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
             if !zukaVoice { siriVoice() }   // retry for next time: this read uses the fallback after a previous Siri test failed
-            shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: ({ let h = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"; return FileManager.default.isExecutableFile(atPath: h) ? h : "/usr/bin/say" }())); p.arguments = arguments
+            shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: (sayHelper ?? "/usr/bin/say")); p.arguments = arguments
             p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
                 guard let self, self.voice === p else { return }; self.voice = nil; if let then { then() } else { self.hide(after: 2) }
             } }
@@ -2436,8 +2441,7 @@ final class App: NSObject, WKScriptMessageHandler {
     var warmedVoice = false
     func warmVoice(_ partial: String) {   // Zuka: once the streamed answer has a finished first phrase, her voice pre-records it, so speaking starts at once
         guard Prefs.bool("speak"), !warmedVoice, partial.count > 12, partial.range(of: #"[.!?,]\s"#, options: .regularExpression) != nil else { return }
-        let helper = NSHomeDirectory() + "/.local/share/chatterbox/atticus-say"
-        guard FileManager.default.isExecutableFile(atPath: helper) else { return }
+        guard let helper = sayHelper else { return }
         warmedVoice = true
         let p = Process(); p.executableURL = URL(fileURLWithPath: helper); p.arguments = ["--warm", "--", partial]; try? p.run()
     }
@@ -2717,13 +2721,16 @@ final class App: NSObject, WKScriptMessageHandler {
         show()
         let g = gen
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); p.arguments = [clip]
+        // Echo-cancelled mic: she can't hear her own greeting, so listening starts with the key press instead of after the greeting
+        let together = Prefs.bool("echoCancel") && !WakeListener.bluetoothMic()
         p.terminationHandler = { [weak self] done in DispatchQueue.main.async {
             guard let self, self.greeter === done else { return }
             self.greeter = nil
-            if self.gen == g && self.panel.isVisible && !self.engine.isRunning { self.start(dictate: false) }   // Esc or click-away during the greeting: stay closed
+            if !together && self.gen == g && self.panel.isVisible && !self.engine.isRunning { self.start(dictate: false) }   // Esc or click-away during the greeting: stay closed
         } }
-        greeter = p
-        do { try p.run() } catch { greeter = nil; start(dictate: false) }
+        greeter = together ? nil : p
+        do { try p.run() } catch { greeter = nil; if !together { start(dictate: false) } }
+        if together { start(dictate: false) }
     }
     func startDictation() { start(dictate: true) }
     func beginSpeechSegment(_ base: String, listeningID: Int) -> (feed: AsyncStream<AnalyzerInput>.Continuation, inputID: UUID, analyzer: SpeechAnalyzer, reading: Task<Void, Never>, segment: Int) {
@@ -4480,8 +4487,8 @@ var leader: NSPanel?
 func relaunchSoon() {
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/sh")
     p.arguments = ProcessInfo.processInfo.environment["ATTICUS_DIR"] != nil ? ["-c", "sleep 1; exec \"$0\" -onboarded YES", CommandLine.arguments[0]] :
-                  ["-c", "sleep 1; launchctl bootout gui/\(getuid())/com.atticus.app >/dev/null 2>&1; sleep 1; launchctl bootstrap gui/\(getuid()) \"$1\" 2>/dev/null || open \"$0\"",
-                   Bundle.main.bundlePath, NSHomeDirectory() + "/Library/LaunchAgents/com.atticus.app.plist"]
+                  ["-c", "sleep 1; launchctl bootout gui/\(getuid())/\(agentLabel) >/dev/null 2>&1; sleep 1; launchctl bootstrap gui/\(getuid()) \"$1\" 2>/dev/null || open \"$0\"",
+                   Bundle.main.bundlePath, NSHomeDirectory() + "/Library/LaunchAgents/\(agentLabel).plist"]
     try? p.run()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
 }
@@ -4539,6 +4546,50 @@ enum Updater {
         if managedByNix { status = "Run nix profile upgrade or nix run again."; return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { if Prefs.bool("autoUpdate") { check() } }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in if Prefs.bool("autoUpdate") { check() } }
+    }
+}
+
+// First launch of the packaged Wavelength.app: start its voice (a LaunchAgent running the bundled Python) and add itself to Login Items.
+// Both only when they do not exist yet, so a user who removed one is not overruled on every launch. The dev build never runs this.
+func packagedFirstRun() {
+    guard let rt = runtimeDir, ProcessInfo.processInfo.environment["ATTICUS_DIR"] == nil else { return }
+    let fm = FileManager.default, home = NSHomeDirectory(), agents = home + "/Library/LaunchAgents", uid = getuid()
+    try? fm.createDirectory(atPath: agents, withIntermediateDirectories: true)
+    try? fm.createDirectory(atPath: home + "/Library/Caches/Wavelength/voice", withIntermediateDirectories: true)
+    func plist(_ label: String, _ args: [String], keepAlive: String, log: String) -> String {
+        let a = args.map { "<string>\($0)</string>" }.joined()
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+        <key>Label</key><string>\(label)</string>
+        <key>ProgramArguments</key><array>\(a)</array>
+        <key>RunAtLoad</key><true/>
+        <key>KeepAlive</key>\(keepAlive)
+        <key>StandardErrorPath</key><string>\(log)</string>
+        <key>StandardOutPath</key><string>\(log)</string>
+        </dict></plist>
+        """
+    }
+    let voice = agents + "/com.wavelength.voice.plist"
+    if !fm.fileExists(atPath: voice) {
+        let body = plist("com.wavelength.voice", [rt + "/python/bin/python3", "-I", rt + "/voice/zuka_voice_light.py"], keepAlive: "<true/>", log: home + "/Library/Caches/Wavelength/voice/voice.log")
+        try? body.write(toFile: voice, atomically: true, encoding: .utf8)
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = ["bootstrap", "gui/\(uid)", voice]; try? p.run()
+    }
+    let login = agents + "/com.wavelength.app.plist"
+    if !fm.fileExists(atPath: login), let exe = Bundle.main.executablePath {   // takes effect at the next login: this copy is already running
+        let body = plist("com.wavelength.app", [exe], keepAlive: "<dict><key>SuccessfulExit</key><false/></dict>", log: home + "/Library/Caches/Wavelength/app.err")
+        try? body.write(toFile: login, atomically: true, encoding: .utf8)
+        if !Prefs.bool("login") { let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = ["disable", "gui/\(uid)/com.wavelength.app"]; try? p.run() }
+    }
+    // greetings in her voice, once the voice is up (no-op when they exist)
+    let greet = home + "/.local/share/zuka/greetings"
+    if !((try? fm.contentsOfDirectory(atPath: greet)) ?? []).contains(where: { $0.hasSuffix(".wav") }) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 45) {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: rt + "/python/bin/python3"); p.arguments = ["-I", rt + "/voice/make-greetings.py"]
+            p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice; try? p.run()
+        }
     }
 }
 
@@ -4978,7 +5029,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         if k == "login" {   // the LaunchAgent build.sh installed: enabled = starts at login
             if ProcessInfo.processInfo.environment["ATTICUS_DIR"] != nil { Prefs.set("login",false); push(); return }
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            p.arguments = [v as? Bool == true ? "enable" : "disable", "gui/\(getuid())/com.atticus.app"]; try? p.run()
+            p.arguments = [v as? Bool == true ? "enable" : "disable", "gui/\(getuid())/\(agentLabel)"]; try? p.run()
         }
     }
 
@@ -7439,8 +7490,79 @@ func checkMic() {
     showNudge(["title": a == "Slack" ? "Huddle detected" : "Meeting detected", "when": "In \(a) · Want Atticus to listen?", "who": "", "context": "", "app": a])
 }
 Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in checkMic() }
+// Zuka: the wake word. Listens on this Mac only (Apple's on-device speech, nothing leaves it) for the assistant's name:
+// "Zuka" alone opens the box listening; "Zuka, open Calculator" does it straight away. Echo-cancelled, so calls, videos and
+// music from this Mac's speakers don't wake it; other audio is barely ducked. Off while she listens, works or talks,
+// off with Bluetooth mics (it would switch headphones to call mode), off unless "wakeWord" is on.
+final class WakeListener {
+    private var engine: AVAudioEngine?, request: SFSpeechAudioBufferRecognitionRequest?, task: SFSpeechRecognitionTask?
+    private var started = Date.distantPast, woke = false, rest = "", settle: DispatchWorkItem?, timer: Timer?
+    func begin() { timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() } }
+    private var wanted: Bool {
+        Prefs.bool("wakeWord") && !Prefs.bool("paused") && !app.engine.isRunning && !app.busy && app.voice?.isRunning != true && app.greeter == nil
+            && SFSpeechRecognizer.authorizationStatus() == .authorized && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized && !WakeListener.bluetoothMic()
+    }
+    static func bluetoothMic() -> Bool {
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        guard let id = audioProp(sys, kAudioHardwarePropertyDefaultInputDevice, AudioDeviceID(0)).first, let mic = microphones().first(where: { $0.id == id }) else { return true }
+        return [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(mic.transport)
+    }
+    private func tick() {
+        guard wanted else { if engine != nil { stop() }; return }
+        if engine == nil || (!woke && Date().timeIntervalSince(started) > 50) { stop(); start() }   // recognition tasks are capped near a minute
+    }
+    private var names: [String] { Array(Set([Prefs.assistantName.lowercased(), "zuka", "zooka", "zuca", "zukaa", "zucca"])).filter { $0.count >= 3 } }
+    private func start() {
+        guard let r = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), r.isAvailable, r.supportsOnDeviceRecognition else { return }
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.requiresOnDeviceRecognition = true; req.shouldReportPartialResults = true; req.contextualStrings = [Prefs.assistantName, "Zuka"]
+        let e = AVAudioEngine(), input = e.inputNode
+        do {
+            try input.setVoiceProcessingEnabled(true)
+            input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+            let fmt = input.outputFormat(forBus: 0)
+            guard let mono = AVAudioFormat(standardFormatWithSampleRate: fmt.sampleRate, channels: 1) else { return }
+            input.installTap(onBus: 0, bufferSize: 2048, format: fmt) { buf, _ in
+                guard let src = buf.floatChannelData?[0], let one = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buf.frameLength), let dst = one.floatChannelData?[0] else { return }
+                one.frameLength = buf.frameLength; dst.update(from: src, count: Int(buf.frameLength)); req.append(one)
+            }
+            try e.start()
+        } catch { input.removeTap(onBus: 0); try? input.setVoiceProcessingEnabled(false); return }
+        engine = e; request = req; started = Date(); woke = false; rest = ""
+        task = r.recognitionTask(with: req) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self, self.request === req else { return }
+                if let text = result?.bestTranscription.formattedString { self.heard(text) }
+                if error != nil || result?.isFinal == true { if !self.woke { self.stop() } }   // the next tick starts a fresh one
+            }
+        }
+    }
+    private func heard(_ text: String) {
+        let low = text.lowercased()
+        guard let hit = names.compactMap({ n in low.range(of: "\\b" + NSRegularExpression.escapedPattern(for: n) + "\\b", options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound }) else { return }
+        woke = true
+        rest = String(text[hit.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces))
+        settle?.cancel()
+        let go = DispatchWorkItem { [weak self] in self?.act() }; settle = go
+        DispatchQueue.main.asyncAfter(deadline: .now() + (rest.isEmpty ? 0.7 : 1.0), execute: go)   // let the sentence finish
+    }
+    private func act() {
+        let said = rest; stop()
+        guard !Prefs.bool("paused"), !app.engine.isRunning, !app.busy else { return }
+        if said.split(separator: " ").count >= 1 && said.count >= 3 { app.show(); app.typed(said) }   // "Zuka, open Calculator": straight to it
+        else { app.clickTalk = true; app.start(); if !app.engine.isRunning { app.clickTalk = false } }   // "Zuka": she listens
+    }
+    func stop() {
+        settle?.cancel(); settle = nil
+        task?.cancel(); task = nil; request?.endAudio(); request = nil
+        if let e = engine { e.inputNode.removeTap(onBus: 0); e.stop(); try? e.inputNode.setVoiceProcessingEnabled(false); engine = nil }
+        woke = false; rest = ""
+    }
+}
+let wake = WakeListener()
 Mic.echo = VoiceProcessingMic()
 let app = App()
+DispatchQueue.main.async { wake.begin() }
 let agentsUI = AgentPanels()
 let routineWake = RoutineWake()
 let onboarding = Onboarding()
@@ -7541,6 +7663,7 @@ let delegate = Delegate()
 NSApplication.shared.delegate = delegate
 if !hotkeyRegistered || !dictateHotkeyRegistered { DispatchQueue.main.async { settings.open() } }   // another app owns a saved shortcut: show the warning, not a silent dead key
 Updater.schedule()
+packagedFirstRun()
 
 // Test hook: `defaults write com.atticus.app demo -string "<request>"` then restart runs it once without the mic.
 if let demo = UserDefaults.standard.string(forKey: "demo") {

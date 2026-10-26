@@ -1,4 +1,6 @@
-#!/usr/bin/python3 -I
+#!/bin/sh
+"exec" "sh" "-c" 'P="$(dirname "$0")/../python/bin/python3"; [ -x "$P" ] || P=/usr/bin/python3; exec "$P" -I "$0" "$@"' "$0" "$@"
+# (sh line above: run with the bundled Python when this sits in Wavelength.app's runtime, else the system python3; Python reads it as a string)
 """Drop-in for /usr/bin/say used by Atticus: speaks with the Chatterbox voice server.
 
 Same arguments as say (the words come after "--"). Stays quiet while Premiere or Media Encoder is busy
@@ -7,7 +9,15 @@ exporting, starts the server when it isn't running, and falls back to say if the
 import fcntl, json, os, re, socket, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-SOCK = os.path.join(HERE, "voice.sock")
+# Inside Wavelength.app: runtime/voice/atticus-say with runtime/python next to this folder. Its own folder is read-only
+# (the app is signed), so the socket, lock and log live in ~/Library/Caches/Wavelength/voice; the model is runtime/kokoro.
+RUNTIME_PY = os.path.join(os.path.dirname(HERE), "python", "bin", "python3")
+BUNDLED = os.path.exists(RUNTIME_PY)
+STATE = os.path.expanduser("~/Library/Caches/Wavelength/voice") if BUNDLED else HERE
+if BUNDLED:
+    try: os.makedirs(STATE, exist_ok=True)
+    except OSError: pass
+SOCK = os.path.join(STATE, "voice.sock")
 # Light voice (Kokoro) by default; a file named "engine" next to this one containing "expressive" switches to Chatterbox.
 try: EXPRESSIVE = open(os.path.join(HERE, "engine")).read().strip() == "expressive"
 except OSError: EXPRESSIVE = False
@@ -15,9 +25,9 @@ if EXPRESSIVE:
     PY = os.path.join(HERE, ".venv", "bin", "python")
     SERVER = os.path.join(HERE, "atticus_voice_server.py")
 else:
-    PY = os.path.expanduser("~/.local/share/kokoro/.venv/bin/python")
+    PY = RUNTIME_PY if BUNDLED else os.path.expanduser("~/.local/share/kokoro/.venv/bin/python")
     SERVER = os.path.join(HERE, "zuka_voice_light.py")
-LOG = os.path.expanduser("~/.config/atticus/voice.log")
+LOG = os.path.join(STATE, "voice.log") if BUNDLED else os.path.expanduser("~/.config/atticus/voice.log")
 START_WAIT = 12     # seconds for her first words; slower than this, the Mac voice answers instead
 LOAD_WAIT = 40      # seconds to wait for a cold start (~25 s) before giving up to say
 MIN_FREE = 20       # % free memory below which a cold start is skipped: Premiere needs it more
@@ -58,7 +68,7 @@ def low_memory():
 def loading():
     """Another engine holds the lock (it is still loading): wait for it instead of starting a second copy."""
     try:
-        with open(os.path.join(HERE, "voice.lock"), "w") as f:
+        with open(os.path.join(STATE, "voice.lock"), "w") as f:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(f, fcntl.LOCK_UN)
         return False
     except OSError:

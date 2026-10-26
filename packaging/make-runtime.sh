@@ -30,8 +30,9 @@ done
 
 # 3. the voice scripts (team versions: no personal details)
 mkdir -p "$OUT/voice"
-cp "$HERE/../Projects/zuka-team/team/voice/zuka_voice_light.py" "$HERE/../Projects/zuka-team/team/voice/atticus_voice_server.py" "$OUT/voice/" 2>/dev/null \
-  || cp ~/Projects/zuka-team/team/voice/zuka_voice_light.py ~/Projects/zuka-team/team/voice/atticus_voice_server.py "$OUT/voice/"
+T=~/Projects/zuka-team/team
+cp "$T/voice/zuka_voice_light.py" "$T/voice/atticus_voice_server.py" "$T/voice/atticus-say" "$T/greetings/make-greetings.py" "$T/greetings/lines.json" "$OUT/voice/"
+chmod +x "$OUT/voice/atticus-say"
 
 # 4. check: the voice renders from here, offline, with nothing from this Mac's environment
 env -i HOME="$HOME" PATH=/usr/bin:/bin HF_HUB_OFFLINE=1 "$OUT/python/bin/python3" -I - "$OUT" <<'PY'

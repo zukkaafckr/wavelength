@@ -8,10 +8,21 @@ import fcntl, hashlib, json, os, queue, signal, socket, subprocess, sys, tempfil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from atticus_voice_server import emotion, sentences, log, SOCK   # one place for mood rules and sentence splitting
+from atticus_voice_server import emotion, sentences, log, SOCK, state_dir   # one place for mood rules and sentence splitting
 
-KOKORO = os.path.expanduser("~/.local/share/kokoro")
-CACHE, CACHE_MAX = os.path.join(HERE, "cache-light"), 400
+
+
+def kokoro_dir():
+    """The model folder: WAVELENGTH_KOKORO, else the bundled runtime/kokoro beside this script's folder, else the dev install."""
+    env = os.environ.get("WAVELENGTH_KOKORO")
+    if env: return env
+    bundled = os.path.join(os.path.dirname(HERE), "kokoro")
+    return bundled if os.path.exists(os.path.join(bundled, "kokoro-v1.0.int8.onnx")) else os.path.expanduser("~/.local/share/kokoro")
+
+
+KOKORO = kokoro_dir()
+STATE = state_dir()   # the script's own folder, or ~/Library/Caches/Wavelength/voice when that is read-only (inside the app)
+CACHE, CACHE_MAX = os.path.join(STATE, "cache-light"), 400
 MOODS = {   # Heart+Bella blend weight and pace: upbeat for good news, warm for normal lines, steady for problems
     "excited": (0.70, 1.12), "friendly": (0.80, 1.06), "calm": (0.90, 0.98),
 }
@@ -52,7 +63,8 @@ def short_espeak():
 
 
 def main():
-    lock = open(os.path.join(HERE, "voice.lock"), "w")   # one engine at a time, shared with the expressive server
+    os.makedirs(os.path.dirname(SOCK), exist_ok=True)
+    lock = open(os.path.join(STATE, "voice.lock"), "w")   # one engine at a time, shared with the expressive server
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError: log("another voice engine is running; exiting"); return
     # normal priority on purpose: it works ~1 s per sentence, and a low-priority engine starves when the Mac is busy (39 s for two words)

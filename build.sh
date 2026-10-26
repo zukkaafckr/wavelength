@@ -1,6 +1,14 @@
 #!/bin/bash
 # Installs Atticus: builds Atticus.app, starts it at login, and (re)starts it now. Run it again after any change.
-set -e; cd "$(dirname "$0")"
+# ./build.sh                  install + start the dev build (~/Applications/Atticus.app, com.atticus.app)
+# ./build.sh --package OUTDIR  build only OUTDIR/Wavelength.app (com.wavelength.app), self-contained with its own runtime; installs and starts nothing
+set -e
+PACKAGE=""
+if [ "$1" = "--package" ]; then
+  [ -n "$2" ] || { echo "usage: build.sh --package OUTDIR"; exit 1; }
+  mkdir -p "$2"; PACKAGE=$(cd "$2" && pwd)
+fi
+cd "$(dirname "$0")"
 VERSION=$(tr -d '\n' < VERSION)
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid VERSION: $VERSION"; exit 1; }
 IFS=. read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "$VERSION"
@@ -9,12 +17,14 @@ BUILD=$((VERSION_MAJOR * 1000000 + VERSION_MINOR * 1000 + VERSION_PATCH))
 [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] || { echo "Atticus needs macOS 26 or later (it uses Apple's new on-device speech)."; exit 1; }
 xcode-select -p >/dev/null 2>&1 || { echo "Needs Apple's command line tools. Run: xcode-select --install   then run ./build.sh again."; exit 1; }
 command -v python3 >/dev/null || { echo "Atticus needs Python 3. Install it, then run ./build.sh again."; exit 1; }
-command -v claude >/dev/null || [ -x ~/.local/bin/claude ] || echo "Note: Claude Code is not installed yet. Atticus's setup window can install it, or you can pick Devin or Pi."
+[ -n "$PACKAGE" ] || command -v claude >/dev/null || [ -x ~/.local/bin/claude ] || echo "Note: Claude Code is not installed yet. Atticus's setup window can install it, or you can pick Devin or Pi."
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 # A compiler error must leave the installed app and its resources alone.
 swiftc -O -target "$(uname -m)-apple-macos26.0" Atticus.swift -o "$STAGE/Atticus"
 APP=~/Applications/Atticus.app   # in Applications so System Settings can list it for permissions
+BUNDLE_ID=com.atticus.app; SOURCE=$(pwd)
+if [ -n "$PACKAGE" ]; then APP="$PACKAGE/Wavelength.app"; BUNDLE_ID=com.wavelength.app; SOURCE=""; rm -rf "$APP"; fi   # a package has no source folder to update from
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
 cp atticus.py zuka_commands.py "$APP/Contents/Resources/"
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
@@ -23,7 +33,7 @@ cat > "$APP/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.atticus.app</string>
+<key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleName</key><string>Wavelength</string>
 <key>CFBundleDisplayName</key><string>Wavelength</string>
 <key>CFBundleExecutable</key><string>Atticus</string>
@@ -31,16 +41,26 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>AtticusSource</key><string>$(pwd)</string>
+<key>AtticusSource</key><string>$SOURCE</string>
 <key>LSUIElement</key><true/>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>Wavelength</string><key>CFBundleURLSchemes</key><array><string>wavelength</string></array></dict></array>
-<key>NSMicrophoneUsageDescription</key><string>Atticus listens when you use its shortcut or microphone button.</string>
-<key>NSAppleEventsUsageDescription</key><string>Atticus controls apps like Finder, Chrome and Music when you ask it to.</string>
-<key>NSCalendarsFullAccessUsageDescription</key><string>Atticus reads your calendar, adds events you request, and asks before moving or deleting existing events. Calendar details are sent to your chosen AI model.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>Atticus turns your words into text on this Mac.</string>
+<key>NSMicrophoneUsageDescription</key><string>Wavelength listens when you use its shortcut or microphone button.</string>
+<key>NSAppleEventsUsageDescription</key><string>Wavelength controls apps like Finder, Chrome and Music when you ask it to.</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Wavelength reads your calendar, adds events you request, and asks before moving or deleting existing events. Calendar details are sent to your chosen AI model.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Wavelength turns your words into text on this Mac.</string>
 </dict></plist>
 P
 mv "$STAGE/Atticus" "$APP/Contents/MacOS/Atticus"
+if [ -n "$PACKAGE" ]; then
+  # Self-contained: portable Python + voice model + voice scripts go inside the app, so the Mac needs nothing installed.
+  packaging/make-runtime.sh "$APP/Contents/Resources/runtime"
+  # Every Mach-O inside the runtime gets its own ad hoc signature, then the whole app is sealed once, after everything is copied.
+  find "$APP/Contents/Resources/runtime" -type f \( -perm -u+x -o -name '*.so' -o -name '*.dylib' \) -print0 |
+    while IFS= read -r -d '' f; do file -b "$f" | grep -q Mach-O && codesign --force -s - "$f" 2>/dev/null; done || true
+  codesign --force --deep -s - "$APP"
+  echo "Packaged: $APP"
+  exit 0
+fi
 # With a code-signing identity named "Atticus Local Signing" in the keychain, macOS keeps permissions across
 # rebuilds and auto-updates; ad hoc signing would ask for every permission again after each one. So make it once.
 ID=$(security find-identity -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')

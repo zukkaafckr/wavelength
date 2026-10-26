@@ -511,7 +511,14 @@ def local_servers():
     with ThreadPoolExecutor(max_workers=len(LOCAL_SERVERS)) as pool:
         return [found for found in pool.map(probe, LOCAL_SERVERS) if found]
 SHOT = '/tmp/atticus-screen'   # + -<n>.jpg, one per display
-os.environ['PATH'] = f"/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:{HOME}/.claude/local:/usr/bin:/bin:/usr/sbin:" + os.environ.get('PATH', '')
+def runtime_path(env=None):
+    """PATH for helpers and hooks. In the packaged Wavelength.app, WAVELENGTH_RUNTIME names its bundled runtime and its
+    Python goes first, so nothing depends on a Python installed on the Mac."""
+    env = os.environ if env is None else env
+    rt = env.get('WAVELENGTH_RUNTIME')
+    first = f"{rt}/python/bin:" if rt else ''
+    return first + f"/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:{HOME}/.claude/local:/usr/bin:/bin:/usr/sbin:" + env.get('PATH', '')
+os.environ['PATH'] = runtime_path()
 INNER = bool(os.environ.get('ATTICUS_ASK'))   # started by the AI's own tool call, not by the user
 APP = os.environ.get('ATTICUS_APP') or os.path.join(HOME, 'Applications/Atticus.app/Contents/MacOS/Atticus')   # set by Atticus.app
 

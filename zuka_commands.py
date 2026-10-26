@@ -541,12 +541,16 @@ def _set_voice(key):
     with open(VOICE_PICK, 'w') as f: json.dump({'pick': key, 'at': time.time()}, f)
     greet, keep = os.path.join(ZUKA_DIR, 'greetings'), os.path.join(ZUKA_DIR, 'greetings-original')
     maker = os.path.join(ZUKA_DIR, 'greetings-maker', 'make-greetings.py')
+    py = '/usr/bin/python3'
+    rt = os.environ.get('WAVELENGTH_RUNTIME')
+    if rt and os.path.exists(os.path.join(rt, 'voice', 'make-greetings.py')):   # packaged app: its own Python and script
+        maker, py = os.path.join(rt, 'voice', 'make-greetings.py'), os.path.join(rt, 'python', 'bin', 'python3')
     if key != old and os.path.isdir(greet):
         if not os.path.isdir(keep): shutil.copytree(greet, keep)   # the greetings she was set up with, kept once
         if key == 'warm':   # back to her own voice: her original greetings, not a re-recording
             shutil.rmtree(greet); shutil.copytree(keep, greet)
         elif os.path.exists(maker):   # re-record the greetings in the new voice once the sample has played
-            subprocess.Popen(['/bin/sh', '-c', f'sleep 15; exec /usr/bin/python3 -I "{maker}"'], stdout=subprocess.DEVNULL,
+            subprocess.Popen(['/bin/sh', '-c', f'sleep 15; exec "{py}" -I "{maker}"'], stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
     label = VOICES[key]
     return f"Okay, this is my {label} voice. Hi {CALL()}, how do I sound? Say keep it, or try another one."
@@ -753,8 +757,10 @@ def _tcp(host, port, timeout):
         return False
 
 
-VOICE_SOCK = os.path.expanduser('~/.local/share/chatterbox/voice.sock')
-SAY = os.path.expanduser('~/.local/share/chatterbox/atticus-say')
+_RT = os.environ.get('WAVELENGTH_RUNTIME', '')   # set by the packaged Wavelength.app: its own Python, voice scripts and model
+_RT_SAY = os.path.join(_RT, 'voice', 'atticus-say') if _RT else ''
+VOICE_SOCK = os.path.expanduser('~/Library/Caches/Wavelength/voice/voice.sock' if _RT_SAY and os.access(_RT_SAY, os.X_OK) else '~/.local/share/chatterbox/voice.sock')
+SAY = _RT_SAY if _RT_SAY and os.access(_RT_SAY, os.X_OK) else os.path.expanduser('~/.local/share/chatterbox/atticus-say')
 CLAUDE_BIN = os.path.expanduser('~/.local/bin/claude')
 
 

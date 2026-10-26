@@ -80,7 +80,8 @@ class NativeTests(unittest.TestCase):
         start = SWIFT[SWIFT.index('    var greeter: Process?'):SWIFT.index('    func startDictation()')]
         self.assertIn('guard !clickTalk, !panel.isVisible, !busy, !engine.isRunning, Prefs.bool("greet"),', start)
         self.assertIn('Prefs.str("talkMode") == "toggle"', start)   # hold-to-talk would lose the key release
-        self.assertIn('if self.gen == g && self.panel.isVisible && !self.engine.isRunning { self.start(dictate: false) }', start)
+        self.assertIn('if !together && self.gen == g && self.panel.isVisible && !self.engine.isRunning { self.start(dictate: false) }', start)
+        self.assertIn('if together { start(dictate: false) }', start)   # echo-cancelled: listening starts with the press, not after the greeting
         for part in ('"morning"', '"afternoon"', '"evening"', '"night"'): self.assertIn(part, start)
         self.assertIn('"greet": true', SWIFT)
 

@@ -6,7 +6,19 @@ so the model's memory is given back. A client that disconnects (Atticus stopped 
 import fcntl, hashlib, json, os, queue, re, signal, socket, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOCK = os.path.join(HERE, "voice.sock")
+
+
+def state_dir():
+    """Where the socket, lock, log and voice memory live: next to this script, unless that folder can't be written
+    (inside Wavelength.app it must not be), then ~/Library/Caches/Wavelength/voice."""
+    if os.access(HERE, os.W_OK) and ".app/" not in HERE + "/":
+        return HERE
+    d = os.path.expanduser("~/Library/Caches/Wavelength/voice")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+SOCK = os.path.join(state_dir(), "voice.sock")
 def _idle_min():
     """Minutes of silence before the model unloads (0: stay loaded). The env var wins (the login agent sets it), then the
     install's idle-min file next to this script (set for small-memory Macs), then 480."""
@@ -84,7 +96,7 @@ def memory_guard():
             os._exit(0)
 
 
-CACHE, CACHE_MAX = os.path.join(HERE, "cache"), 300   # Zuka voice memory: ~200 KB a clip, oldest dropped first
+CACHE, CACHE_MAX = os.path.join(state_dir(), "cache"), 300   # Zuka voice memory: ~200 KB a clip, oldest dropped first
 
 
 def clip_for(model, conds, ta, s, e):
@@ -111,7 +123,7 @@ def log(*a):
 
 
 def main():
-    lock = open(os.path.join(HERE, "voice.lock"), "w")   # one engine at a time: a second start (login + on-demand) just leaves
+    lock = open(os.path.join(state_dir(), "voice.lock"), "w")   # one engine at a time: a second start (login + on-demand) just leaves
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError: log("another voice engine is running; exiting"); return
     os.nice(5)

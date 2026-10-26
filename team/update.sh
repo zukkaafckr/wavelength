@@ -15,13 +15,28 @@ if [ $AUTO = 1 ]; then   # never rebuild (it restarts the app) while someone is 
   [ "${idle:-0}" -ge 600 ] || exit 0
 fi
 cp team/managed.json "$HOME/.config/atticus/managed.json" 2>/dev/null || true   # the app reads its "locked" list at launch
+CALL_NOW=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' team/.personalized 2>/dev/null)
+[ -n "$CALL_NOW" ] && CALL="$CALL_NOW" python3 - <<'PY' 2>>"$LOG" || true
+import json, os   # the owner's voice / work-setup choices for this person: no restart needed, applied every run
+f = "team/people/" + os.environ["CALL"].lower().replace(" ", "-") + ".json"
+ME = json.load(open(f)) if os.path.exists(f) else {}
+for name, key in (("voice.json", "voice"), ("workflow.json", "workflow")):   # e.g. {"voice": {"pick": "jarvis"}} or workflow keys
+    if isinstance(ME.get(key), dict):
+        f = os.path.expanduser("~/.config/atticus/" + name)
+        try: cur = json.load(open(f))
+        except (OSError, ValueError): cur = {}
+        if any(cur.get(k) != v for k, v in ME[key].items()): cur.update(ME[key]); json.dump(cur, open(f, "w"), indent=1)
+PY
 # names now live in settings (older installs kept them only in team/.personalized): quit the app first, or it rewrites the file
 M_NAME=$(sed -n 's/^name=\(.*\) call=.*/\1/p' team/.personalized 2>/dev/null); M_CALL=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' team/.personalized 2>/dev/null)
-if [ -n "$M_NAME" ] && [ -n "$M_CALL" ] && ! NAME="$M_NAME" CALL="$M_CALL" python3 -c 'import json,os,sys; s=json.load(open(os.path.expanduser("~/.config/atticus/settings.json"))); m=json.load(open("team/managed.json"))["values"]; sys.exit(0 if (s.get("assistantName"),s.get("userCallName"))==(os.environ["NAME"],os.environ["CALL"]) and all(s.get(k)==v for k,v in m.items()) else 1)' 2>/dev/null; then
+if [ -n "$M_NAME" ] && [ -n "$M_CALL" ] && ! NAME="$M_NAME" CALL="$M_CALL" python3 -c 'import json,os,sys; s=json.load(open(os.path.expanduser("~/.config/atticus/settings.json"))); m=json.load(open("team/managed.json"))["values"]; f="team/people/"+os.environ["CALL"].lower().replace(" ","-")+".json"; m={**m, **(json.load(open(f)).get("settings",{}) if os.path.exists(f) else {})}; sys.exit(0 if (s.get("assistantName"),s.get("userCallName"))==(os.environ["NAME"],os.environ["CALL"]) and all(s.get(k)==v for k,v in m.items()) else 1)' 2>/dev/null; then
 [ -n "$WAVELENGTH_TEST" ] || osascript -e 'quit app id "com.atticus.app"' 2>/dev/null || true; for _ in $(seq 1 20); do pgrep -x Atticus >/dev/null || break; sleep 0.5; done
 NAME="$M_NAME" CALL="$M_CALL" python3 - <<'PY'
 import json, os
 MANAGED = json.load(open("team/managed.json"))["values"]   # settings the owner manages for the whole team
+PERSON = "team/people/" + os.environ["CALL"].lower().replace(" ", "-") + ".json"   # the owner's settings for this one person (optional)
+ME = json.load(open(PERSON)) if os.path.exists(PERSON) else {}
+MANAGED = {**MANAGED, **ME.get("settings", {})}
 p = os.path.expanduser("~/.config/atticus/settings.json")
 try: s = json.load(open(p))
 except (OSError, ValueError): s = {}
