@@ -782,7 +782,8 @@ def gate():
         if answer == 'task': allow_for_task(kind)
         decision(answer in ('y', 'task'), 'The user said no. Do not try another way.')
         return
-    if os.environ.get('ATTICUS_AGENT') and pref('safe', True) and event.get('tool_name') in ('Bash', 'Write', 'Edit') and not trusted_read:
+    ordinary = event.get('tool_name') == 'Bash' and pref('quietAgents', False) and not risky(inp.get('command', ''))   # Zuka: agents run ordinary commands without a card each time; deletes, sends, buys, file changes still ask (below)
+    if os.environ.get('ATTICUS_AGENT') and pref('safe', True) and event.get('tool_name') in ('Bash', 'Write', 'Edit') and not trusted_read and not ordinary:
         kind = action_kind(event['tool_name'], inp)
         answer = 'y' if task_allowed(kind) else ask_user(
             {'q': 'Allow this task action?', 'cmd': (str(inp.get('file_path', '')) + '\n' + json.dumps(inp, ensure_ascii=False)).strip()[:800], 'task': bool(kind)}, 600)
@@ -1433,6 +1434,23 @@ def spotify_item(name, anything=True):
         except Exception:
             p = None
     return p
+
+
+def youtube_play(query):
+    """Zuka: the first YouTube result for the words, opened in the browser to play. Free and instant: one page fetch, no AI."""
+    if not query:
+        subprocess.run(['open', 'https://www.youtube.com/'], capture_output=True)
+        return 'YouTube is open. Which song? Say "play" and the name, and I\'ll put it on.'
+    url = 'https://www.youtube.com/results?search_query=' + urllib.parse.quote_plus(query)
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh)', 'Accept-Language': 'en'})
+        vid = re.search(r'"videoId":"([\w-]{11})"', urllib.request.urlopen(req, timeout=6).read().decode('utf-8', 'ignore'))
+    except (OSError, ValueError):
+        vid = None   # offline or blocked: show the search instead
+    target = f'https://www.youtube.com/watch?v={vid[1]}' if vid else url
+    if subprocess.run(['open', target], capture_output=True).returncode: return None
+    fast.cmds = [f'open {shlex.quote(target)}']
+    return f'Playing {query} on YouTube.' if vid else f'Here is YouTube for {query}.'
 
 
 def play(name, anything=True):
@@ -2095,6 +2113,11 @@ def fast(text):
             return None
         fast.cmds = [f'{SHOW} --bg {shlex.quote(target)}']
         return f'Searched {query}' + (f' on {site[1]}.' if site else '.')
+    m = re.fullmatch(r'(?:(?:open|go to|on) youtube and )?play (?:the song |song |the video |video )?(.+?) (?:on|in|from) youtube'
+                     r'|(?:open|go to) youtube and play (?:the song |song |the video |video )?(.+)', t)   # Zuka: free and instant, no AI
+    if m:
+        what = m[1] or m[2]
+        return youtube_play(None if re.fullmatch(r'(?:a|some|any|me a)? ?(?:song|music|video|something)', what) else what)
     m = re.fullmatch(r'play (?:my |the )?(?:spotify )?(?:playlist )?(?:called |named )?(.+?)( playlist)?( on spotify)?', t)
     if m and not DEICTIC.search(m[1]) and not MORE.search(m[1]):   # "play X" alone may mean a video: only the user's playlist here, anything else goes to the AI (which uses --play)
         reply = play(m[1], anything=bool(m[3]))
@@ -5361,6 +5384,9 @@ def run(task, p=None, shots=(), auto_work=False, *, request=None, main_only=Fals
                     if not wait_commit():
                         stop_claude(p)
                         return '', None, steps
+                    if pref('usageCheck', False) and ask_user({'q': 'Start a background helper for this?', 'cmd': 'It works on its own with a bigger model, so it uses a bigger share of your plan\'s session limit. Free commands never ask.'}, 120) != 'y':
+                        stop_claude(p)   # Zuka: background agents cost more than a question, so J okays each one
+                        return 'Okay, no background helper. Say it in a simpler way, or ask again when you\'re ready.', 0, []
                     if directive.get('namedAction'):
                         outcome = named_agent_action(directive['namedAction'])
                         managed_reply = outcome.get('reply', '')

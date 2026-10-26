@@ -54,7 +54,7 @@ import json, os
 p = os.path.expanduser("~/.config/atticus/settings.json")
 try: s = json.load(open(p))
 except (OSError, ValueError): s = {}
-s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"], usageCheck=True, autoUpdate=False, stats=False,
+s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"], usageCheck=True, quietAgents=True, autoUpdate=False, stats=False,
          improve=False, improveAsked=True, support=False, talkMode="toggle", routing="cheapest", speak=True, greet=True)
 with open(p, "w") as f: json.dump(s, f, indent=2)
 os.chmod(p, 0o600)

@@ -1070,7 +1070,7 @@
           (details ? '<button class="details">Copy Details</button>' : '');
         d.querySelector('p').textContent = cmd;
       } else {
-        const usage = q.startsWith('Answering this needs Claude');   // Zuka's usage card: plain words and Skip / Go ahead, not a security prompt
+        const usage = /^(Answering this needs Claude|Start a background helper)/.test(q);   // Zuka's usage card: plain words and Skip / Go ahead, not a security prompt
         d.innerHTML = usage ? '<b></b><p class="cost"></p><div><button>Skip</button><button class="go">Go ahead</button></div>'
                             : '<b></b><code></code><div><button>Don’t Allow</button><button class="go">Allow</button></div>';
         if (usage) { d.classList.add('usage'); d.querySelector('p').textContent = cmd; d.querySelector('p').dataset.usage = '1'; }

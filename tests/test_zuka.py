@@ -134,6 +134,24 @@ class NativeTests(unittest.TestCase):
         self.assertIn('if line.hasPrefix("… ") { self.warmVoice(String(line.dropFirst(2))) }', SWIFT)
         self.assertIn('p.arguments = ["--warm", "--", partial]', SWIFT)
 
+    def test_youtube_play_is_free_and_instant(self):
+        src = (ROOT / 'atticus.py').read_text()
+        self.assertIn('return youtube_play(None if re.fullmatch', src)
+        self.assertLess(src.index('return youtube_play('), src.index("m = re.fullmatch(r'play (?:my |the )?(?:spotify )?"))   # before the Spotify rule
+        with patch('atticus.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertIn('Which song', atticus.youtube_play(None))
+            self.assertEqual(run.call_args[0][0], ['open', 'https://www.youtube.com/'])
+
+    def test_quiet_agents_still_ask_for_risky_steps(self):
+        src = (ROOT / 'atticus.py').read_text()
+        self.assertIn("ordinary = event.get('tool_name') == 'Bash' and pref('quietAgents', False) and not risky(inp.get('command', ''))", src)
+        self.assertTrue(atticus.risky('rm -rf ~/Documents') or 'rm' in atticus.DENIED)
+
+    def test_background_helpers_need_an_ok(self):
+        src = (ROOT / 'atticus.py').read_text()
+        self.assertIn("ask_user({'q': 'Start a background helper for this?'", src)
+        self.assertIn('Start a background helper', UI)
+
     def test_settings_has_zuka_switches(self):
         html = (ROOT / 'ui' / 'settings.html').read_text()
         self.assertIn('data-k="greet"', html); self.assertIn('data-k="usageCheck"', html)
