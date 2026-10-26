@@ -939,6 +939,21 @@
   $('feedbackinclude').onchange=feedbackPreview;
   $('feedbacktext').oninput=()=>{feedbackInvalidate();feedbackTimer=setTimeout(feedbackRequest,300);};
   $('feedbackopen').onclick=()=>post({do:'feedbackOpen'});
+  // Team installs: settings the owner manages are hidden (not just locked), and so is the developer-only Intelligence page.
+  function managed(locked) {
+    if (!locked.length) return;
+    const lk = new Set(locked);
+    document.querySelectorAll('[data-k]').forEach(el => { if (lk.has(el.dataset.k)) { const r = el.closest('.row'); if (r) r.hidden = true; } });
+    for (const id of ['brain']) { const sec = document.getElementById(id), nav = document.querySelector(`nav button[data-s="${id}"]`); if (sec) sec.hidden = true; if (nav) nav.hidden = true; }
+    document.querySelectorAll('section .group').forEach(g => {
+      if (g.querySelector('.row') && !g.querySelector('.row:not([hidden])')) { g.hidden = true; const h = g.previousElementSibling; if (h && h.tagName === 'H3') h.hidden = true; }
+    });
+    if (!document.getElementById('managednote')) {
+      const n = document.createElement('p'); n.id = 'managednote'; n.className = 'lede';
+      n.textContent = 'Some settings are managed by your team\u2019s owner.';
+      const g = document.getElementById('general'); if (g) g.insertBefore(n, g.querySelector('h3') || g.firstChild);
+    }
+  }
   window.st = {
     feedback(result){if(result.revision!==feedbackRevision)return;if(result.error){$('feedbackbody').textContent=result.error;$('feedbackopen').disabled=true;return;}if(result.include!==$('feedbackinclude').checked)return;$('feedbackbody').textContent=result.body;$('feedbackopen').disabled=false;},
     profileImport(result) {
@@ -1002,6 +1017,7 @@
     load(d) {
       P = {talkMode: 'hold', dictateMode: 'verbatim', dictateHotkeyLabel: '', microphone: 'automatic', meetingSave: true, meetingSummary: true, client: 'claude', ...d.prefs}; recording = '';
       P.routines = d.routines || []; paintRoutines();
+      managed(d.locked || []);
       $('shortcut').classList.remove('rec'); $('change').textContent = 'Change Shortcut'; $('dictatechange').classList.remove('rec');
       hotkeyTaken = !!d.hotkeyTaken; dictateHotkeyTaken = !!d.dictateHotkeyTaken; if ($('schint').className !== 'warn') $('schint').className = hotkeyTaken ? 'taken' : '';
       if (d.icon) $('icon').src = $('bigicon').src = d.icon;

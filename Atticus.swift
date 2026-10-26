@@ -4863,6 +4863,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         js("st.motion(\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion))")
         var d: [String: Any] = ["prefs": Prefs.d, "mics": microphoneChoices(), "version": Updater.version, "update": Updater.status, "managedUpdates": Updater.managedByNix,
                                 "hotkeyTaken": !hotkeyRegistered, "dictateHotkeyTaken": !Prefs.str("dictateHotkeyLabel").isEmpty && !dictateHotkeyRegistered, "globeTaken": globeKeyTaken()]
+        d["locked"] = Array(Prefs.locked)   // team installs: the owner's settings are hidden here
         let routines = (Prefs.path as NSString).deletingLastPathComponent + "/routines.json"
         d["routines"] = (try? JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:routines)))) as? [[String:Any]] ?? []
         if let t = NSApp.applicationIconImage?.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
