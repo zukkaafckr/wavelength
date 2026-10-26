@@ -215,14 +215,17 @@ enum Prefs {
         if values["dictateHotkeyLabel"] as? String == "", values["dictateHotkeyOff"] as? Bool != true, (values["hotkeyMods"] as? Int ?? 0) & (1 << 20) == 0 {
             values["dictateHotkeyCode"] = -2; values["dictateHotkeyMods"] = 1 << 20; values["dictateHotkeyLabel"] = "fn"
         }
+        for (k, v) in managed["values"] as? [String: Any] ?? [:] { values[k] = v }   // the owner's values for managed settings, every launch
         return values   // persisted with the next preference write; legacy keys remain readable
     }()
     // Team installs: settings the owner manages (managed.json "locked", written by the team installer/updater) can't be changed here.
-    static let locked: Set<String> = {
-        let file = (path as NSString).deletingLastPathComponent + "/managed.json"
-        guard let data = FileManager.default.contents(atPath: file), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        return Set(j["locked"] as? [String] ?? [])
+    // A packaged (public) app carries its own managed.json inside the app; a team install gets it from the updater.
+    static let managed: [String: Any] = {
+        let files = [Bundle.main.resourcePath.map { $0 + "/managed.json" }, (path as NSString).deletingLastPathComponent + "/managed.json"].compactMap { $0 }
+        for file in files { if let data = FileManager.default.contents(atPath: file), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return j } }
+        return [:]
     }()
+    static let locked: Set<String> = Set(managed["locked"] as? [String] ?? [])
     @discardableResult static func set(_ k: String, _ v: Any) -> Bool {   // false: not on disk, so the old value stays too
         if locked.contains(k) { return false }
         let old = d[k]; d[k] = v

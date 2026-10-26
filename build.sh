@@ -54,6 +54,7 @@ mv "$STAGE/Atticus" "$APP/Contents/MacOS/Atticus"
 if [ -n "$PACKAGE" ]; then
   # Self-contained: portable Python + voice model + voice scripts go inside the app, so the Mac needs nothing installed.
   packaging/make-runtime.sh "$APP/Contents/Resources/runtime"
+  cp packaging/managed.json "$APP/Contents/Resources/managed.json"   # the owner's fixed settings: users see and change only user settings
   # Every Mach-O inside the runtime gets its own ad hoc signature, then the whole app is sealed once, after everything is copied.
   find "$APP/Contents/Resources/runtime" -type f \( -perm -u+x -o -name '*.so' -o -name '*.dylib' \) -print0 |
     while IFS= read -r -d '' f; do file -b "$f" | grep -q Mach-O && codesign --force -s - "$f" 2>/dev/null; done || true

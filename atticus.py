@@ -397,7 +397,19 @@ def profile_import(snapshot=None):
             'errorReasons': data.get('errorReasons', {}) if isinstance(data, dict) else {}}
 
 
+def managed_values():
+    """The owner's fixed settings: inside a packaged app (next to its runtime), or the team file the updater keeps."""
+    for f in ([os.path.join(os.path.dirname(os.environ['WAVELENGTH_RUNTIME']), 'managed.json')] if os.environ.get('WAVELENGTH_RUNTIME') else []) + [os.path.join(DIR, 'managed.json')]:
+        try:
+            with open(f) as h: v = json.load(h).get('values')
+            if isinstance(v, dict): return v
+        except (OSError, ValueError): pass
+    return {}
+
+
 def pref(key, default):
+    fixed = managed_values()
+    if key in fixed: return fixed[key]   # managed settings can't be changed by hand-editing settings.json either
     try:
         with open(PREFS) as f:
             return json.load(f).get(key, default)
