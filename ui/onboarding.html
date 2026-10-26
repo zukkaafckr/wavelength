@@ -1,5 +1,31 @@
 <!doctype html>
 <html><head><meta charset="utf-8">
+<script>/*NAMES*/
+// The assistant's name and what it calls you come from Settings (Atticus.swift fills window.__names); these pages ship with the default wording.
+(() => {
+  const N = window.__names || {}, name = N.assistant || 'Zuka', call = N.call || 'J';
+  window.ANAME = name; window.CNAME = call;
+  document.documentElement.style.setProperty('--call', JSON.stringify(call));
+  if (name === 'Zuka') return;
+  const ATTR = ['placeholder', 'title', 'aria-label', 'alt'], rx = /\bZuka\b/;
+  const fixText = t => { if (rx.test(t.data)) t.data = t.data.replace(/\bZuka\b/g, () => name); };
+  const fix = n => {
+    if (n.nodeType === 3) return n.parentNode && !/^(SCRIPT|STYLE)$/.test(n.parentNode.nodeName) && fixText(n);
+    if (n.nodeType !== 1 || /^(SCRIPT|STYLE)$/.test(n.nodeName)) return;
+    for (const a of ATTR) if (n.hasAttribute(a) && rx.test(n.getAttribute(a))) n.setAttribute(a, n.getAttribute(a).replace(/\bZuka\b/g, () => name));
+    for (const c of n.childNodes) fix(c);
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    const watch = new MutationObserver(list => {
+      watch.disconnect();
+      for (const m of list) m.type === 'childList' ? m.addedNodes.forEach(fix) : fix(m.target);
+      watch.observe(document.body, opts);
+    }), opts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR };
+    fix(document.body); watch.observe(document.body, opts);
+    if (rx.test(document.title)) document.title = document.title.replace(/\bZuka\b/g, () => name);
+  });
+})();
+</script>
 <!-- Zuka first-run window. Atticus.swift loads this (orbs.js goes in place of the marker), calls ob.set({...}) every second
      with which permissions are on, and gets {do:'grant', id} / {do:'done'} back. -->
 <style>

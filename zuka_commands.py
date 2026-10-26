@@ -40,8 +40,23 @@ DEFAULTS = {
 }
 TASK_DEFAULTS = {'folder': None, 'nameFormat': '{date}_{batch}_{name}_{type}', 'dateFormat': '%d%b%y',
                  'types': {}, 'defaultType': 'Video', 'subfolders': [], 'exports': {}}
-NO_TASKS = "Task folders aren't set up for you yet, J. You can set them up in your setup."
-FAIL = "That one slipped past me, J. Try again in a moment."
+def _setting(key, default):
+    """A Settings value read at call time (the assistant's name and what it calls the user live in settings.json)."""
+    try:
+        path = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.join(os.path.expanduser('~'), '.config/atticus'), 'settings.json')
+        with open(path) as f:
+            value = json.load(f).get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else default
+    except (OSError, ValueError, AttributeError):
+        return default
+
+
+def NAME(): return _setting('assistantName', 'Zuka')   # what the assistant is called
+def CALL(): return _setting('userCallName', 'J')       # what it calls the user
+
+
+NO_TASKS = "Task folders aren't set up for you yet, {call}. You can set them up in your setup."
+FAIL = "That one slipped past me, {call}. Try again in a moment."
 
 
 # ---------------------------------------------------------------- helpers
@@ -336,14 +351,14 @@ def _start_day():
         _open_app(a)
         bits.append(_app_short(a))
     if not bits:
-        return "Morning, J. You haven't set up a start-of-day routine yet, but you can in your setup." + pre
-    return f"Morning, J. {_say_list(bits)} {'is' if len(bits) == 1 else 'are'} up." + pre
+        return f"Morning, {CALL()}. You haven't set up a start-of-day routine yet, but you can in your setup." + pre
+    return f"Morning, {CALL()}. {_say_list(bits)} {'is' if len(bits) == 1 else 'are'} up." + pre
 
 
 def _edit_mode():
     em = _workflow()['editMode']
     if not em['apps'] and not em['openTaskFolder']:
-        return "Edit mode isn't set up for you yet, J. You can set it up in your setup."
+        return f"Edit mode isn't set up for you yet, {CALL()}. You can set it up in your setup."
     for a in em['apps']:
         _open_app(a)
     names = [_app_short(a) for a in em['apps']]
@@ -366,9 +381,9 @@ def _count_videos(d):
 def _export_check():
     tk = _workflow()['tasks']
     if not tk:
-        return NO_TASKS
+        return NO_TASKS.format(call=CALL())
     if not tk['exports']:
-        return "I don't have export folders set up for you yet, J. You can set them in your setup."
+        return f"I don't have export folders set up for you yet, {CALL()}. You can set them in your setup."
     folder = _newest_task_folder()
     if not folder:
         return f"I can't find a task folder in {tk['folder'].name}."
@@ -390,7 +405,7 @@ def _unsplit(camel):
 def _new_task(m):
     tk = _workflow()['tasks']
     if not tk:
-        return NO_TASKS
+        return NO_TASKS.format(call=CALL())
     batch, rest = m.group(6), m.group(7).split()
     typ = tk['defaultType']
     for n in (3, 2, 1):
@@ -398,7 +413,7 @@ def _new_task(m):
             typ, rest = tk['types'][''.join(rest[-n:])], rest[:-n]
             break
     if not rest:
-        return "What should I call it, J? Say new task, the number, then a name."
+        return f"What should I call it, {CALL()}? Say new task, the number, then a name."
     name = _camel(rest)
     now = datetime.now()
     stamp = now.strftime(tk['dateFormat']).upper()
@@ -422,7 +437,7 @@ def _open_tool(key):
     label, url = _workflow()['tools'][key]
     host = re.sub(r'^https?://', '', url).split('/')[0]
     ok = _focus_or_open(host, url)
-    return f"{label}'s up." if ok else f"I couldn't open {label}, J."
+    return f"{label}'s up." if ok else f"I couldn't open {label}, {CALL()}."
 
 
 def _unread():
@@ -488,12 +503,12 @@ def _site(key):
             time.sleep(1)
             titles = _tab_titles(host)
             if titles and _badge(titles): break
-        if not titles: return f"I opened {label}, J. It's still loading; ask me again in a second."
+        if not titles: return f"I opened {label}, {CALL()}. It's still loading; ask me again in a second."
     n = _badge(titles)
-    if not n: return f"Nothing new on {label}, J."
+    if not n: return f"Nothing new on {label}, {CALL()}."
     if key in INBOX:
         _set_offer([key])
-    return f"{label} shows {_num(n)} new, J." + (" That's messages and notifications together." if key == 'linkedin' else '') + (OFFER_TEXT if key in INBOX else '')
+    return f"{label} shows {_num(n)} new, {CALL()}." + (" That's messages and notifications together." if key == 'linkedin' else '') + (OFFER_TEXT if key in INBOX else '')
 
 
 # ---- her voice: "voice options", "try the british voice", "keep it"
@@ -534,7 +549,7 @@ def _set_voice(key):
             subprocess.Popen(['/bin/sh', '-c', f'sleep 15; exec /usr/bin/python3 -I "{maker}"'], stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
     label = VOICES[key]
-    return f"Okay, this is my {label} voice. Hi J, how do I sound? Say keep it, or try another one."
+    return f"Okay, this is my {label} voice. Hi {CALL()}, how do I sound? Say keep it, or try another one."
 
 
 def _voice_list():
@@ -603,7 +618,7 @@ def _shutdown_offered():
 
 def _shut_down():
     _osa('tell application "System Events" to shut down')   # the normal Shut Down: apps still asking to save stop it, nothing is forced
-    return "Shutting down. Good night, J."
+    return f"Shutting down. Good night, {CALL()}."
 
 
 def _end_of_day(t):
@@ -613,12 +628,12 @@ def _end_of_day(t):
         closed, left = _close_all()
         if left: return _close_reply(closed, left) + " Save those and say shut down when you're ready."
         _offer_shutdown()
-        return "Good work today, J. " + _close_reply(closed, left) + " Shut down the Mac too?"
+        return f"Good work today, {CALL()}. " + _close_reply(closed, left) + " Shut down the Mac too?"
     if _CLOSE_ALL.match(t):
         return _close_reply(*_close_all())
     if _SHUTDOWN.match(t):
         _offer_shutdown()
-        return "Shut down the Mac, J? Unsaved work stops it. Say yes to go ahead."
+        return f"Shut down the Mac, {CALL()}? Unsaved work stops it. Say yes to go ahead."
     return None
 
 
@@ -678,7 +693,7 @@ def _calendar(today_only):
             continue
     evs.sort(key=lambda x: x[0])
     if not evs:
-        return "Nothing left on your calendar today, J." if today_only else "Nothing on your calendar for the next week."
+        return f"Nothing left on your calendar today, {CALL()}." if today_only else "Nothing on your calendar for the next week."
     if today_only:
         top = evs[:3]
         s = '; '.join(f"{t} at {_clock(d)}" for d, t in top)
@@ -879,12 +894,12 @@ def _math(raw):
     try:
         v = _safe_eval(s)
     except ZeroDivisionError:
-        return "I can't divide by zero, J."
+        return f"I can't divide by zero, {CALL()}."
     except Exception:
         return None
     if abs(v) > 1e15 or v != v:
         return None
-    return f"That's {_fmt_num(v)}, J."
+    return f"That's {_fmt_num(v)}, {CALL()}."
 
 
 # ---- time, date, day
@@ -900,11 +915,11 @@ def _ordinal(n):
 def _time_reply(t):
     d = _now()
     if _TIME_Q.match(t):
-        return f"It's {_clock(d)}, J."
+        return f"It's {_clock(d)}, {CALL()}."
     if _DATE_Q.match(t):
-        return f"It's {d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}, J."
+        return f"It's {d.strftime('%A')} the {_ordinal(d.day)} of {d.strftime('%B')}, {CALL()}."
     if _DAY_Q.match(t):
-        return f"It's {d.strftime('%A')}, J."
+        return f"It's {d.strftime('%A')}, {CALL()}."
     return None
 
 
@@ -925,18 +940,18 @@ def _weather(kind, city=None):
     url = 'https://wttr.in/' + (urllib.parse.quote(city) if city else '') + '?format=%C+%t+feels+%f,+%p+rain'
     txt = _get_text(url)
     if not txt:
-        return "I can't reach the weather right now, J."
+        return f"I can't reach the weather right now, {CALL()}."
     m = _WX.match(txt.strip())
     if not m:
-        return f"I couldn't find the weather for {city.title()}, J." if city else "I can't reach the weather right now, J."
+        return f"I couldn't find the weather for {city.title()}, {CALL()}." if city else f"I can't reach the weather right now, {CALL()}."
     cond, tt, ff, mm = m.group('c').strip().lower(), m.group('t'), m.group('f'), float(m.group('p'))
     place = f"In {city.title()} right now" if city else 'Right now'
     if kind == 'rain':
         if mm > 0:
-            return f"Yes, it's raining {'in ' + city.title() + ' ' if city else ''}right now, J. {cond.capitalize()}, {_deg(tt)}."
-        return f"No rain right now, J. It's {cond}, {_deg(tt)}."
+            return f"Yes, it's raining {'in ' + city.title() + ' ' if city else ''}right now, {CALL()}. {cond.capitalize()}, {_deg(tt)}."
+        return f"No rain right now, {CALL()}. It's {cond}, {_deg(tt)}."
     if kind == 'temp':
-        return f"It's {_deg(tt)} outside, J. Feels like {_deg(ff)}."
+        return f"It's {_deg(tt)} outside, {CALL()}. Feels like {_deg(ff)}."
     return f"{place} it's {cond}, {_deg(tt)}, feels like {_deg(ff)}." + (f" There's some rain, {mm:g} millimetres." if mm > 0 else '')
 
 
@@ -1033,7 +1048,7 @@ def _currency(raw):
     out = n * rate
     one = lambda c, v: _CUR_NAME[c][0] if abs(v - 1) < 1e-9 else _CUR_NAME[c][1]
     res = _fmt_num(out, 0 if out >= 100 else 2)
-    return f"{_fmt_num(n)} {one(a, n)} is about {res} {one(b, round(out, 2))}, J."
+    return f"{_fmt_num(n)} {one(a, n)} is about {res} {one(b, round(out, 2))}, {CALL()}."
 
 
 # ---- volume
@@ -1052,26 +1067,26 @@ def _volume(t, raw):
     if m:
         n = max(0, min(100, int(m.group(1))))
         _osa(f'set volume output volume {n}')
-        return f"Volume at {n}, J."
+        return f"Volume at {n}, {CALL()}."
     if _VOL_MAX.match(t):
         _osa('set volume output volume 100')
-        return "Volume's at max, J."
+        return f"Volume's at max, {CALL()}."
     if _VOL_MUTE.match(t):
         _osa('set volume output muted true')
-        return "Muted, J."
+        return f"Muted, {CALL()}."
     if _VOL_UNMUTE.match(t):
         _osa('set volume output muted false')
-        return "Unmuted, J."
+        return f"Unmuted, {CALL()}."
     up, down = _VOL_UP.match(t), _VOL_DOWN.match(t)
     if not (up or down):
         return None
     try:
         cur = int(_osa('output volume of (get volume settings)'))
     except Exception:
-        return "I can't change the volume on this output, J."
+        return f"I can't change the volume on this output, {CALL()}."
     n = max(0, min(100, cur + (12 if up else -12)))
     _osa(f'set volume output volume {n}' + (' without output muted' if False else '') + ('\nset volume output muted false' if up else ''))
-    return f"Volume at {n}, J."
+    return f"Volume at {n}, {CALL()}."
 
 
 # ---- timer
@@ -1106,12 +1121,12 @@ def _timer(raw):
     m2 = re.search(_DUR, s)
     secs = _dur_secs(m2)
     if secs < 1 or secs > 86400:
-        return "I can set timers up to a day, J."
+        return f"I can set timers up to a day, {CALL()}."
     say = SAY if os.access(SAY, os.X_OK) else None
-    speak = f"{shlex.quote(SAY)} -- \"Time's up, J.\"" if say else "/usr/bin/say \"Time's up, J.\""
-    note = 'display notification "Time\'s up, J." with title "Zuka timer"'
+    speak = f"{shlex.quote(SAY)} -- \"Time's up, {CALL()}.\"" if say else f"/usr/bin/say \"Time's up, {CALL()}.\""
+    note = f'display notification "Time\'s up, {CALL()}." with title "{NAME()} timer"'
     _spawn(['/bin/sh', '-c', f"sleep {secs}; /usr/bin/osascript -e {shlex.quote(note)}; {speak}"])
-    return f"Timer set for {_human_dur(secs)}, J."
+    return f"Timer set for {_human_dur(secs)}, {CALL()}."
 
 
 # ---- reminders
@@ -1185,8 +1200,8 @@ def _remind(raw):
     try:
         _osa(script, 20)
     except Exception:
-        return "I couldn't add that to Reminders, J. Allow Zuka under Privacy & Security, Reminders."
-    return f"Okay, I'll remind you to {task} {label}, J."
+        return f"I couldn't add that to Reminders, {CALL()}. Allow {NAME()} under Privacy & Security, Reminders."
+    return f"Okay, I'll remind you to {task} {label}, {CALL()}."
 
 
 # ---- screenshot, lock, folders
@@ -1201,17 +1216,17 @@ def _screenshot(area):
     path = os.path.expanduser(f"~/Desktop/Screenshot {_now().strftime('%Y-%m-%d at %H.%M.%S')}.png")
     r = _run(['screencapture'] + (['-i'] if area else ['-x']) + [path], 60 if area else 10)
     if r.returncode != 0:
-        return "I couldn't take it, J. Allow Zuka under Privacy & Security, Screen Recording."
+        return f"I couldn't take it, {CALL()}. Allow {NAME()} under Privacy & Security, Screen Recording."
     if area and not os.path.exists(path):
-        return "No screenshot taken, J."
-    return "Screenshot saved to your Desktop, J."
+        return f"No screenshot taken, {CALL()}."
+    return f"Screenshot saved to your Desktop, {CALL()}."
 
 
 # ---- music
-_MUSIC = [(re.compile(r"^(?:pause|stop|hold)(?: the| this)? (?:music|song|track|playing|playback)$"), 'pause', 'Paused, J.'),
-          (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this)? (?:music|song|track)$|^(?:resume|unpause)$"), 'play', 'Playing, J.'),
-          (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track)$|^skip this$"), 'next track', 'Next one, J.'),
-          (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track)$|^play the previous (?:song|track)$"), 'previous track', 'Going back, J.')]
+_MUSIC = [(re.compile(r"^(?:pause|stop|hold)(?: the| this)? (?:music|song|track|playing|playback)$"), 'pause', 'Paused, {call}.'),
+          (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this)? (?:music|song|track)$|^(?:resume|unpause)$"), 'play', 'Playing, {call}.'),
+          (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track)$|^skip this$"), 'next track', 'Next one, {call}.'),
+          (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track)$|^play the previous (?:song|track)$"), 'previous track', 'Going back, {call}.')]
 
 
 def _music(t):
@@ -1235,7 +1250,7 @@ def _music(t):
             continue
     pick = pick or running[0]
     _osa(f'tell application "{pick}" to {cmd}', 8)
-    return reply
+    return reply.format(call=CALL())
 
 
 # ---- presence / health
@@ -1272,8 +1287,8 @@ def _health(deep):
     signed = _claude_signed_in() if deep else None
     if online and voice and signed is not False:
         if deep:
-            return "All good, J. Online, voice is up, and Claude is signed in."
-        return "I'm here, J. Online, and the voice is up."
+            return f"All good, {CALL()}. Online, voice is up, and Claude is signed in."
+        return f"I'm here, {CALL()}. Online, and the voice is up."
     bad = []
     if not online:
         bad.append("I can't reach the internet")
@@ -1281,7 +1296,7 @@ def _health(deep):
         bad.append("the voice isn't answering")
     if signed is False:
         bad.append("Claude isn't signed in")
-    return "Not quite, J. " + _say_list([b[0].upper() + b[1:] if i == 0 else b for i, b in enumerate(bad)]) + '.'
+    return f"Not quite, {CALL()}. " + _say_list([b[0].upper() + b[1:] if i == 0 else b for i, b in enumerate(bad)]) + '.'
 
 
 # ---- spell
@@ -1312,15 +1327,15 @@ def _basics(t, raw):
             return _screenshot(False)
         if _LOCK.match(t):
             _run(['pmset', 'displaysleepnow'], 5)
-            return "Locking up, J."
+            return f"Locking up, {CALL()}."
         if _SCREEN_OFF.match(t):
             _run(['pmset', 'displaysleepnow'], 5)
-            return "Screen off, J."
+            return f"Screen off, {CALL()}."
         m = _FOLDER.match(t)
         if m:
             f = m.group('f')
             _run(['open', os.path.expanduser('~' if f == 'home' else '~/' + f.capitalize())], 10)
-            return f"Opening {'your home folder' if f == 'home' else f.capitalize()}, J."
+            return f"Opening {'your home folder' if f == 'home' else f.capitalize()}, {CALL()}."
         r = _music(t)
         if r:
             return r
@@ -1408,10 +1423,10 @@ def _fmt_linkedin(items):
     spons = [i for i in unread if (i.get('snippet') or '').lower().startswith('sponsored')]
     real = [i for i in unread if i not in spons]
     if not real and not spons:
-        return "Nothing new on LinkedIn, J."
+        return f"Nothing new on LinkedIn, {CALL()}."
     tail = f", plus {len(spons)} sponsored" if spons else ''
     if not real:
-        return f"On LinkedIn, just {len(spons)} sponsored, J."
+        return f"On LinkedIn, just {len(spons)} sponsored, {CALL()}."
     first = real[0]
     late = f" Latest message: {first['name']}, '{_snip(first.get('snippet'))}'" + (f", at {first['time']}." if first.get('time') else '.')
     if len(real) == 1:
@@ -1422,13 +1437,13 @@ def _fmt_linkedin(items):
 def _fmt_whatsapp(items):
     un = [i['name'] for i in items if i.get('unread')]
     if not un:
-        return "Nothing unread on WhatsApp, J."
+        return f"Nothing unread on WhatsApp, {CALL()}."
     return f"WhatsApp: {len(un)} chat{'' if len(un) == 1 else 's'} unread: {_names(un)}."
 
 
 def _fmt_gmail(items):
     if not items:
-        return "Nothing unread in your Gmail, J."
+        return f"Nothing unread in your Gmail, {CALL()}."
     bits = [(i['name'] or 'Someone') + (f", about {_snip(i['subject'])}" if i.get('subject') else '') for i in items[:5]]
     return f"Gmail: {len(items)} unread: " + '; '.join(bits) + '.'
 
@@ -1481,10 +1496,10 @@ def _read_inbox(key, may_open=None):
     try:
         raw = _tab_exec(b, host, js)
         if raw == 'NOBROWSER':
-            return f"{sb} isn't open, J."
+            return f"{sb} isn't open, {CALL()}."
         if raw == 'NOTAB':
             if not (can_open if may_open is None else may_open):
-                return f"{label} isn't open in {sb}, J."
+                return f"{label} isn't open in {sb}, {CALL()}."
             _open_bg(b, url)
             data = _poll(b, host, js)
         else:
@@ -1494,14 +1509,14 @@ def _read_inbox(key, may_open=None):
                 data = _poll(b, host, js)
     except Exception as e:
         if 'javascript' in str(e).lower() and not _is_safari(b):
-            return f"I can't read {sb} tabs yet, J. In {sb}, turn on View, Developer, Allow JavaScript from Apple Events."
+            return f"I can't read {sb} tabs yet, {CALL()}. In {sb}, turn on View, Developer, Allow JavaScript from Apple Events."
         if 'javascript' in str(e).lower():
-            return "I can't read Safari tabs yet, J. In Safari, turn on Develop, Allow JavaScript from Apple Events."
-        return f"I couldn't read {label}, J."
+            return f"I can't read Safari tabs yet, {CALL()}. In Safari, turn on Develop, Allow JavaScript from Apple Events."
+        return f"I couldn't read {label}, {CALL()}."
     if not isinstance(data, dict) or not isinstance(data.get('items'), list) or (not data['items'] and key != 'gmail'):
-        return f"I couldn't read {label}'s list, J." if key == 'whatsapp' else f"I couldn't read {label}, J."
+        return f"I couldn't read {label}'s list, {CALL()}." if key == 'whatsapp' else f"I couldn't read {label}, {CALL()}."
     if key == 'gmail' and not data['items'] and not data.get('any') and data.get('len', 0) < 300:
-        return "I couldn't read Gmail, J."
+        return f"I couldn't read Gmail, {CALL()}."
     return fmt(data['items'])
 
 
@@ -1523,7 +1538,7 @@ def _inbox_phrase(t):
         if s:
             return _read_inbox(_site_key(s))
         out = [r for r in (_read_inbox(k, False) for k in INBOX) if r and "isn't open" not in r]
-        return ' '.join(out) if out else "LinkedIn, WhatsApp and Gmail aren't open in your browser, J."
+        return ' '.join(out) if out else f"LinkedIn, WhatsApp and Gmail aren't open in your browser, {CALL()}."
     if _FOLLOW.match(t) or _YES.match(t):
         sites = _take_offer()
         if not sites:
@@ -1566,7 +1581,7 @@ def handle(t):
         if m and m.group(1) in _ALIASES:
             return _set_voice(_ALIASES[m.group(1)])
         if _KEEP.match(t) and time.time() - _pick().get('at', 0) < 600:
-            return "Done, J. That's my voice now."
+            return f"Done, {CALL()}. That's my voice now."
         sites = _sites()
         m = _site_re(sites).match(t)
         if m and t != m.group(1):   # a bare site name is not a check
@@ -1577,4 +1592,4 @@ def handle(t):
             return _calendar(True)
         return _basics(t, raw)
     except Exception:
-        return FAIL
+        return FAIL.format(call=CALL())

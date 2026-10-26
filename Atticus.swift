@@ -195,7 +195,8 @@ enum Prefs {
         "selection": true, "ahead": true, "aheadDelay": 0.7, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
-        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420]
+        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
+        "assistantName": "Zuka", "userCallName": "J"]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
         "meetingNudge", "meetingDetect", "meetingAuto", "fixSetup", "dictateLearn"]
@@ -226,6 +227,12 @@ enum Prefs {
     }
     static func bool(_ k: String) -> Bool { d[k] as? Bool ?? false }
     static func str(_ k: String) -> String { d[k] as? String ?? "" }
+    static func nameValue(_ k: String) -> String {   // a name from Settings, trimmed; the default when empty
+        let v = str(k).trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? (defaults[k] as? String ?? "") : v
+    }
+    static var assistantName: String { nameValue("assistantName") }
+    static var callName: String { nameValue("userCallName") }
     static func num(_ k: String) -> Double { (d[k] as? NSNumber)?.doubleValue ?? 0 }
 }
 
@@ -631,7 +638,9 @@ func callJS(_ web: WKWebView?, _ fn: String, _ args: [Any]) {
 func loadPage(_ web: WKWebView, _ name: String) {
     let html = (try? String(contentsOfFile: dir + "/ui/" + name, encoding: .utf8)) ?? "missing " + name
     let orbs = (try? String(contentsOfFile: dir + "/ui/orbs.js", encoding: .utf8)) ?? ""
-    web.loadHTMLString(html.replacingOccurrences(of: "/*ORBS*/", with: orbs), baseURL: nil)
+    // The pages ship with the default wording; the assistant's name and what it calls you are filled in from Settings at load (window.__names).
+    let names = (try? JSONSerialization.data(withJSONObject: ["assistant": Prefs.str("assistantName"), "call": Prefs.str("userCallName")])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    web.loadHTMLString(html.replacingOccurrences(of: "/*ORBS*/", with: orbs).replacingOccurrences(of: "/*NAMES*/", with: "window.__names = " + names.replacingOccurrences(of: "</", with: "<\\/") + ";"), baseURL: nil)
 }
 
 // The screen under the mouse, else the main one.
@@ -1889,7 +1898,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let config = (Prefs.path as NSString).deletingLastPathComponent
         let shortcuts = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/skills.json")))) as? [String: Any] ?? [:]
         var seen = Set<String>()
-        return Array((DictationData.words + ["Zuka", "Atticus", profileName(config + "/me.json")] + shortcuts.keys.sorted() +
+        return Array((DictationData.words + ["Zuka", Prefs.assistantName, "Atticus", profileName(config + "/me.json")] + shortcuts.keys.sorted() +
         [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"].flatMap {
             ((try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? []).filter { $0.hasSuffix(".app") }.map { String($0.dropLast(4)) }
         }).filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(DictationData.words.count + 100))
@@ -1925,9 +1934,9 @@ final class App: NSObject, WKScriptMessageHandler {
     func askAloud(_ q: String, _ detail: String) {
         guard Prefs.bool("speak") else { return }
         let path = askFile
-        let said = q.hasPrefix("Answering this needs Claude") ? "That one needs Claude, J. " + detail
-                 : q.hasPrefix("Start a background helper") ? "Want a background helper on this, J? " + detail
-                 : retryOffer ? q + " Want me to try again?" : q + " Say yes or no, J."
+        let said = q.hasPrefix("Answering this needs Claude") ? "That one needs Claude, \(Prefs.callName). " + detail
+                 : q.hasPrefix("Start a background helper") ? "Want a background helper on this, \(Prefs.callName)? " + detail
+                 : retryOffer ? q + " Want me to try again?" : q + " Say yes or no, \(Prefs.callName)."
         deliver(said) { [weak self] in
             guard let self, self.askFile == path, !self.engine.isRunning else { return }
             self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }   // a pause ends it, silence closes the mic
@@ -4484,7 +4493,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     override init() {
         super.init()
-        item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Zuka")
+        item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: Prefs.assistantName)
         menu.delegate = self; item.menu = menu
         item.isVisible = Prefs.bool("menuIcon")
         paint()
@@ -4495,10 +4504,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
         m.removeAllItems()
         let keys = Prefs.str("hotkeyLabel")
         let hint = Prefs.str("input") == "type" ? "Press \(keys) to type" : Prefs.str("talkMode") == "toggle" ? "Press \(keys) to talk · again to send" : "Hold \(keys) and talk"
-        let head = NSMenuItem(title: Prefs.bool("paused") ? "Zuka is paused" : hint, action: nil, keyEquivalent: "")
+        let head = NSMenuItem(title: Prefs.bool("paused") ? "\(Prefs.assistantName) is paused" : hint, action: nil, keyEquivalent: "")
         head.isEnabled = false; m.addItem(head)
         m.addItem(.separator())
-        add(m, "Ask Zuka", #selector(ask), "")
+        add(m, "Ask \(Prefs.assistantName)", #selector(ask), "")
         add(m, "Dictation History…", #selector(dictationHistory), "")
         if pasteHotkeyRegistered && (app.lastDictation ?? DictationData.archive.history.first?.text) != nil {
             add(m, "Paste Last Dictation", #selector(pasteDictation), "v"); m.items.last?.keyEquivalentModifierMask = [.control, .command]
@@ -4506,7 +4515,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         add(m, agentsUI.count > 0 ? "Agents · \(agentsUI.count) running…" : "Agents…", #selector(openAgents), "")
         if agentsUI.hasLive || agentsUI.lingering { add(m, Prefs.bool("agentsHidden") ? "Show Agent Shelf" : "Hide Agent Shelf", #selector(hideAgents), "") }
         if Prefs.bool("meeting") { add(m, meeting.running ? "Stop Meeting Copilot" : "Meeting Copilot…", #selector(toggleMeeting), "") }
-        add(m, Prefs.bool("paused") ? "Resume Zuka" : "Pause Zuka", #selector(pause), "")
+        add(m, Prefs.bool("paused") ? "Resume \(Prefs.assistantName)" : "Pause \(Prefs.assistantName)", #selector(pause), "")
         m.addItem(.separator())
         let u = NSMenuItem(title: today(), action: nil, keyEquivalent: ""); u.isEnabled = false; m.addItem(u)
         m.addItem(.separator())
@@ -4516,7 +4525,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         add(m, "Leave a Tip…", #selector(tipJar), "")
         if !Prefs.bool("tips") { add(m, "Show Tips Again", #selector(tipsOn), "") }   // a tip's "Turn off" has no Settings row to undo it
         m.addItem(.separator())
-        add(m, "Quit Zuka", #selector(quit), "q")
+        add(m, "Quit \(Prefs.assistantName)", #selector(quit), "q")
     }
     func add(_ m: NSMenu, _ t: String, _ a: Selector, _ k: String) { let i = NSMenuItem(title: t, action: a, keyEquivalent: k); i.target = self; m.addItem(i) }
     func today() -> String {
@@ -5476,7 +5485,7 @@ final class MeetingCopilot: NSObject, WKScriptMessageHandler {
                 let (micStream, micFeed) = AsyncStream<AnalyzerInput>.makeStream()
                 let an = SpeechAnalyzer(modules: [tr]); analyzer = an
                 let micAn = SpeechAnalyzer(modules: [mic]); micAnalyzer = micAn
-                let context = AnalysisContext(); context.contextualStrings[.general] = [name, "Zuka", "Atticus"].filter { !$0.isEmpty }
+                let context = AnalysisContext(); context.contextualStrings[.general] = [name, "Zuka", Prefs.assistantName, "Atticus"].filter { !$0.isEmpty }
                 try await an.setContext(context)
                 try await micAn.setContext(context)
                 guard running, generation == g, !Task.isCancelled else { return }

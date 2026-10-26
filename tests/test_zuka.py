@@ -70,8 +70,8 @@ class UsageCheckTests(unittest.TestCase):
 class NativeTests(unittest.TestCase):
     def test_menu_is_atticus_menu_with_zuka_name(self):
         menu = SWIFT[SWIFT.index('    func menuNeedsUpdate'):SWIFT.index('    func add(_ m: NSMenu')]
-        for item in ('"Ask Zuka"', '"Dictation History…"', '"Settings…"', '"Setup & Permissions…"', '"Report Feedback…"',
-                     '"Leave a Tip…"', '"Quit Zuka"', '"Resume Zuka" : "Pause Zuka"', '"Zuka is paused"'):
+        for item in ('"Ask \\(Prefs.assistantName)"', '"Dictation History…"', '"Settings…"', '"Setup & Permissions…"', '"Report Feedback…"',
+                     '"Leave a Tip…"', '"Quit \\(Prefs.assistantName)"', '"Resume \\(Prefs.assistantName)" : "Pause \\(Prefs.assistantName)"', '"\\(Prefs.assistantName) is paused"'):
             self.assertIn(item, menu)
         self.assertNotIn('Atticus', menu)
         self.assertIn('menu.delegate = self; item.menu = menu', SWIFT)   # a click opens the menu, as before
@@ -109,7 +109,7 @@ class NativeTests(unittest.TestCase):
 
     def test_listening_opens_the_premium_box_with_live_words(self):
         self.assertNotIn('capsule', SWIFT); self.assertNotIn('capsule', UI)   # the thin capsule is gone: the box opens
-        self.assertIn('body.hearing:not(.dictate) .turn:last-child .q.empty::before { content: "Go ahead, J."', UI)
+        self.assertIn('body.hearing:not(.dictate) .turn:last-child .q.empty::before { content: "Go ahead, " var(--call, "J") "."', UI)
         self.assertIn('body.hearing:not(.dictate) #status::before', UI)   # the live gold dot next to "Listening"
 
     def test_cards_are_asked_aloud_and_answered_by_voice(self):
@@ -192,7 +192,7 @@ class NativeTests(unittest.TestCase):
     def test_visible_name_is_zuka(self):
         self.assertIn('<key>CFBundleName</key><string>Wavelength</string>', (ROOT / 'build.sh').read_text())   # the app is Wavelength, the assistant Zuka
         self.assertIn('w.title = "Wavelength Settings"', SWIFT)
-        self.assertIn('"Zuka", "Atticus"', SWIFT)   # speech recognition knows her name
+        self.assertIn('"Zuka", Prefs.assistantName, "Atticus"', SWIFT)   # speech recognition knows both the default and the configured name
 
 
 if __name__ == '__main__':

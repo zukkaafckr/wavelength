@@ -33,6 +33,24 @@ def picked():
     except (OSError, ValueError): return "warm"
 
 
+def short_espeak():
+    """espeak-ng only reads its data from a short path (a long one fails with "Error processing file …/phontab"), and
+    phonemizer resolves links, so a link can't help. When the bundled copy sits deep (inside the app, a long user name),
+    copy the data (19 MB, once per boot) to a short real folder."""
+    try:
+        import espeakng_loader, shutil
+        from kokoro_onnx.config import EspeakConfig
+        data = espeakng_loader.get_data_path()
+        if len(data) <= 90: return None
+        short = f"/tmp/wavelength-espeak-{os.getuid()}"
+        if os.path.islink(short): os.unlink(short)
+        if not os.path.exists(os.path.join(short, "phontab")):
+            shutil.rmtree(short, ignore_errors=True); shutil.copytree(data, short + ".part"); os.replace(short + ".part", short)
+        return EspeakConfig(data_path=short)
+    except Exception as e:
+        log("espeak path check skipped:", repr(e)); return None
+
+
 def main():
     lock = open(os.path.join(HERE, "voice.lock"), "w")   # one engine at a time, shared with the expressive server
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -41,7 +59,7 @@ def main():
     import soundfile as sf
     from kokoro_onnx import Kokoro
     t = time.time()
-    k = Kokoro(f"{KOKORO}/kokoro-v1.0.int8.onnx", f"{KOKORO}/voices-v1.0.bin")
+    k = Kokoro(f"{KOKORO}/kokoro-v1.0.int8.onnx", f"{KOKORO}/voices-v1.0.bin", espeak_config=short_espeak())
     loaded = {}
     def styles_for(pick):
         if pick not in loaded:

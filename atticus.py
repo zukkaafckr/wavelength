@@ -405,6 +405,22 @@ def pref(key, default):
         return default   # recent: Atticus.app deletes it on ✕
 
 
+def _name_pref(key, default):
+    value = pref(key, default)
+    value = re.sub(r'[^\w \-]', '', value).strip()[:31] if isinstance(value, str) else ''
+    return value or default
+
+
+def assistant_name():
+    """What the assistant is called (Settings: assistantName). Read per call so one build serves everyone."""
+    return _name_pref('assistantName', 'Zuka')
+
+
+def call_name():
+    """What the assistant calls the user (Settings: userCallName)."""
+    return _name_pref('userCallName', 'J')
+
+
 def save_pref(key, value):
     try:
         with open(PREFS) as f: values = json.load(f)
@@ -499,7 +515,7 @@ os.environ['PATH'] = f"/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:{HOME}
 INNER = bool(os.environ.get('ATTICUS_ASK'))   # started by the AI's own tool call, not by the user
 APP = os.environ.get('ATTICUS_APP') or os.path.join(HOME, 'Applications/Atticus.app/Contents/MacOS/Atticus')   # set by Atticus.app
 
-SYSTEM = f"""You are Zuka, a Mac helper in a small box. The user holds a hotkey, talks, then lets go.
+SYSTEM = f"""You are ASSISTANT_NAME, a Mac helper in a small box. User holds a hotkey, talks, lets go. Call them CALL_NAME.
 Stable facts: answer only if sure. Current facts: search once; prefer dated primary sources. Never invent. Batch independent work.
 Before tools: 3-8 plain words, no command names.
 Final: answer first; ≤3 short sentences, more if asked; verified tasks 1 sentence. Markdown OK; LaTeX math: $inline$, $$display$$.
@@ -780,7 +796,7 @@ def gate():
         decision(False, f'Open web pages with {ME} --web read "<url>": it uses this task\'s own browser window, never the user\'s tabs.'); return
     agent_approved = False
     if re.match(r'mcp__.*(atria|higgsfield)', event.get('tool_name', ''), re.I) or event.get('tool_name', '').rsplit('__', 1)[-1] in CREDIT_TOOLS:
-        decision(False, 'Zuka never uses Atria or Higgsfield: they spend paid credits. Open it in the browser, and generate by hand.'); return
+        decision(False, f'{assistant_name()} never uses Atria or Higgsfield: they spend paid credits. Open it in your browser and generate by hand, {call_name()}.'); return
     if event.get('tool_name', '').startswith('mcp__') and (pref('safe', True) or os.environ.get('ATTICUS_AGENT_PREP') == '1'):
         annotations = connector_annotations(event, os.environ.get('ATTICUS_ASK', ''))
         if annotations.get('readOnly', annotations.get('readOnlyHint')) is True and not annotations.get('destructive', annotations.get('destructiveHint', False)):
@@ -1458,11 +1474,11 @@ def spotify_item(name, anything=True):
 
 
 SMALL_TALK = [
-    (r"(?:how are you|how(?:'s| is) it going|how(?: are)? you doing|what'?s up|sup)(?: today)?", ['Doing great, J!', 'All good here, J!', 'Never better, J!']),
-    (r'(?:thanks|thank you|thank u|cheers)(?: so much| a lot)?', ['Anytime, J.', 'Happy to help, J.', 'Always, J.']),
-    (r'good (?:morning|afternoon|evening)', ['Hey J, good to hear you.', 'Hello, J!']),
-    (r'(?:hi|hello|hey there|yo)', ['Hey J!', 'Hi J!']),
-    (r'(?:who are you|what(?:\'s| is) your name)', ['I\'m Zuka, your assistant on Wavelength.']),
+    (r"(?:how are you|how(?:'s| is) it going|how(?: are)? you doing|what'?s up|sup)(?: today)?", ['Doing great, {call}!', 'All good here, {call}!', 'Never better, {call}!']),
+    (r'(?:thanks|thank you|thank u|cheers)(?: so much| a lot)?', ['Anytime, {call}.', 'Happy to help, {call}.', 'Always, {call}.']),
+    (r'good (?:morning|afternoon|evening)', ['Hey {call}, good to hear you.', 'Hello, {call}!']),
+    (r'(?:hi|hello|hey there|yo)', ['Hey {call}!', 'Hi {call}!']),
+    (r'(?:who are you|what(?:\'s| is) your name)', ['I\'m {name}, your assistant on Wavelength.']),
 ]
 
 
@@ -1473,11 +1489,11 @@ def small_talk(t):
         for rx, replies in SMALL_TALK:
             m = re.match(rf'(?:{rx})\b[\s,.!?]*(?:(?:and|so|also|ok|okay|well)\b\s*)?', rest)
             if m:
-                said = said or replies[int(time.time()) % len(replies)]; rest = rest[m.end():].strip(); break
+                said = said or replies[int(time.time()) % len(replies)].format(call=call_name(), name=assistant_name()); rest = rest[m.end():].strip(); break
         else:
             break
     if not said: return None
-    rest = re.sub(r'^(?:(?:can|could|would|will) you|please|zuka)\s+', '', rest).strip()
+    rest = re.sub(rf'^(?:(?:can|could|would|will) you|please|zuka|{re.escape(assistant_name().lower())})\s+', '', rest).strip()
     return (said + ('' if rest else ' What can I do for you?'), rest)
 
 
@@ -1743,7 +1759,7 @@ def dashes(text):
 def plain(text):
     """Spoken request -> its core words: "Hey Atticus, can you open Spotify please?" -> "open spotify"."""
     t = re.sub(r'[,;!?]|:(?!//)|(?<!\w)\.|\.(?!\w)', '', text.lower().strip(' .!?')).strip()   # keep domain dots; normalize punctuation before spoken prefixes
-    return re.sub(r'^(?:(?:hey|ok|okay|um+|uh+|hmm+|atticus|zuka|zooka|zuca|please|also|and|now|then|(?:can|could|would|will) (?:you|u)) )+|(?:\s+(?:please|for me))+$', '', t)
+    return re.sub(rf'^(?:(?:hey|ok|okay|um+|uh+|hmm+|atticus|zuka|zooka|zuca|{re.escape(assistant_name().lower())}|please|also|and|now|then|(?:can|could|would|will) (?:you|u)) )+|(?:\s+(?:please|for me))+$', '', t)
 
 
 # Learned shortcuts: an action the AI got right is saved as the exact commands it ran; the same words later replay
@@ -2835,7 +2851,7 @@ def need(kind, why='', app='', do=False):
     if not os.environ.get('ATTICUS_ASK'): return f'{name} is off. Tell the user it would help, in one line.'
     wait = 900 if os.environ.get('ATTICUS_AGENT') else 110   # main asks: under the AI's 2-minute tool limit, as pick()
     if kind == 'page-js':
-        app = app or 'Google Chrome'
+        app = app or 'Brave Browser'
         if do or pref('fixSetup', False): emit([f'▸ Turning on page reading in {app}'])
         elif ask_user({'need': kind, 'app': app, 'q': f'I can turn on page reading in {app} for you', 'cmd': why}, min(wait, 600)) != 'y': return skip
         return f'Turned on {name}. Continue, and say so in one line.' if allow_page_js(app) else f'Could not turn on {name}. ' + skip
@@ -3446,7 +3462,7 @@ BUDGET = {'usd': 0.002, 'secs': 6}   # median of the last 50 AI asks must stay u
 
 
 def notify(text):
-    osa('on run argv\ndisplay notification (item 1 of argv) with title "Zuka" sound name "Glass"\nend run', text)
+    osa('on run argv\ndisplay notification (item 1 of argv) with title "' + assistant_name() + '" sound name "Glass"\nend run', text)
 
 
 def watch(what, then, app='', words='', mode='', phrase=''):
@@ -5181,7 +5197,7 @@ def agents_service():
 
 def system_prompt(risky):
     """The Atticus system prompt: the shared helpers and reply protocol, plus this client's risky-action rule."""
-    system = SYSTEM.replace('NEVER_RISKY', risky)
+    system = SYSTEM.replace('NEVER_RISKY', risky).replace('ASSISTANT_NAME', assistant_name()).replace('CALL_NAME', call_name())   # formatted once per start, so each user's prompt is stable
     if pref('workIn', 'back') == 'front':
         system = system.replace('Work behind: never activate/raise unless asked to open/show/switch/focus.', 'Work in front: bring each app/page forward before working in it.').replace('pictures that window in place, even covered; raises only if asked.', 'to bring the working app forward.')
     if client() == 'claude' and not server():
@@ -6587,7 +6603,7 @@ def remember_turn(q, a, shortcut=None, agents=()):
 
 def ask():
     out = osa('tell application "System Events"\nactivate\nset r to display dialog "What should I do?" default answer "" '
-              'buttons {"Cancel", "Go"} default button "Go" with title "Zuka"\nreturn text returned of r\nend tell')
+              'buttons {"Cancel", "Go"} default button "Go" with title "' + assistant_name() + '"\nreturn text returned of r\nend tell')
     return out.strip()
 
 
@@ -7317,7 +7333,7 @@ def main():
     if args == ['--routine-pop']:
         return print(json.dumps(routine_pop()))
     if args[:1] == ['--agent-notify']:
-        return osa('on run argv\ndisplay notification (item 1 of argv) with title "Zuka"\nend run', ' '.join(args[1:])[:2000])
+        return osa('on run argv\ndisplay notification (item 1 of argv) with title "' + assistant_name() + '"\nend run', ' '.join(args[1:])[:2000])
     if args == ['--agents']:
         return agents_service()
     if args == ['--feedback']:
@@ -7459,7 +7475,7 @@ def main():
     if args[:1] in (['--show'], ['--bg']):   # the AI writes either "--show --bg <url>" or "--bg <url>"
         return print(show(' '.join(a for a in args[1:] if a != '--bg'), '--bg' in args[:2] or not wants_focus()))
     if args[:1] == ['--allow-js']:   # Setup → Turn on: the user's click is the OK
-        app = ' '.join(args[1:]) or 'Google Chrome'
+        app = ' '.join(args[1:]) or 'Brave Browser'
         subprocess.run(['open', '-g', '-a', app])
         for _ in range(50):   # a launching browser has no menu bar yet, at most 5 s
             if allow_page_js(app): return print('on')
@@ -7694,8 +7710,8 @@ def main():
         if warm: stop_claude(warm)
         end_turn('cancelled', emit=False)
         log_turn(task, 'Offline: skipped.', t, model='instant', path='instant', attempt_usd=[])
-        return say('!', "I'm offline right now, J. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
-    if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in the team install's settings; a fresh config (tests) never asks
+        return say('!', f"I'm offline right now, {call_name()}. I can still open and arrange apps, play music and run your shortcuts. That one needs the internet.")
+    if pref('usageCheck', False) and not os.environ.get('ZUKA_USAGE_OK') and not os.environ.get('ATTICUS_AGENT'):   # on in installed settings; a fresh config (tests) never asks
         # Zuka: past the free instant commands every ask spends the Claude plan, so the user okays it first
         more = '' if routing_mode() == 'cheapest' else ' (more if it needs a bigger model)'
         if ask_user({'q': 'Answering this needs Claude.', 'cmd': f'Usually {ask_share(usual_cost())} of your session{more}. {limits_line()} Go ahead?'.replace('  ', ' ')}, 60) != 'y' or grant():
@@ -7878,7 +7894,7 @@ def main():
             and not (os.path.exists(asked) and Path(asked).read_text() == time.strftime('%Y-%m-%d')):
         Path(asked).write_text(time.strftime('%Y-%m-%d')); say('!', 'improve')
     if os.environ.get('ATTICUS_UI') != '1':   # typed from the menu bar: no overlay, so a notification
-        osa('on run argv\ndisplay notification (item 1 of argv) with title "Zuka"\nend run', reply)
+        osa('on run argv\ndisplay notification (item 1 of argv) with title "' + assistant_name() + '"\nend run', reply)
 
 
 def run_main():
