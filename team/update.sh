@@ -33,6 +33,17 @@ git reset -q --hard origin/main
 rm -f "$MARK"; python3 team/personalize.py "$NAME" "$CALL" >/dev/null
 
 [ -n "$WAVELENGTH_TEST" ] && { say_ "Test run: updated the files, skipped the voice and rebuild."; exit 0; }
+# names now live in settings (older installs kept them only in team/.personalized): quit the app first, or it rewrites the file
+osascript -e 'quit app id "com.atticus.app"' 2>/dev/null || true; for _ in $(seq 1 20); do pgrep -x Atticus >/dev/null || break; sleep 0.5; done
+NAME="$NAME" CALL="$CALL" python3 - <<'PY'
+import json, os
+p = os.path.expanduser("~/.config/atticus/settings.json")
+try: s = json.load(open(p))
+except (OSError, ValueError): s = {}
+if s.get("assistantName") != os.environ["NAME"] or s.get("userCallName") != os.environ["CALL"]:
+    s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"]); os.makedirs(os.path.dirname(p), exist_ok=True)
+    json.dump(s, open(p, "w"), indent=1)
+PY
 # 3. refresh the voice, check-ins and greeting recorder, then rebuild (this restarts the app)
 CB="$HOME/.local/share/chatterbox"; Z="$HOME/.local/share/zuka"
 if [ -d "$CB" ]; then cp team/voice/zuka_voice_light.py team/voice/atticus_voice_server.py team/voice/atticus-say "$CB/"; chmod +x "$CB/atticus-say"; fi
