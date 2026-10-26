@@ -4,6 +4,7 @@
 // Build: ./build.sh. Kept running by ~/Library/LaunchAgents/com.atticus.app.plist
 import Cocoa
 import Carbon
+import notify
 import AVFoundation
 import Speech
 import WebKit
@@ -192,11 +193,11 @@ enum Prefs {
             ["name": "Persuasive", "text": "Speak to feelings first: why it matters to them and what it means for them, a vivid picture or short story, then the fact that backs it."],
             ["name": "Technical", "text": "Precise terms, numbers and how it works. Name the tradeoff."],
             ["name": "Friendly", "text": "Warm and conversational, like talking to a colleague. Simple words."]],
-        "selection": true, "ahead": true, "aheadDelay": 0.7, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
+        "selection": true, "ahead": true, "aheadDelay": 0.45, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
-        "assistantName": "Zuka", "userCallName": "J"]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
+        "assistantName": "Zuka", "userCallName": "J", "echoCancel": false]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
         "meetingNudge", "meetingDetect", "meetingAuto", "fixSetup", "dictateLearn"]
@@ -286,6 +287,45 @@ func listenMic() -> MicrophoneDevice? {
     let sys = AudioObjectID(kAudioObjectSystemObject)
     return chooseMic(Prefs.str("microphone"), microphones(), audioProp(sys, kAudioHardwarePropertyDefaultInputDevice, AudioDeviceID(0)).first ?? 0)
 }
+// Zuka: Apple's voice processing (echo cancellation + noise suppression) removes what the Mac itself is playing
+// (Discord, a meeting, a video) from the mic, ~9x quieter in a test, so only the person at the Mac is heard.
+// Only on the built-in/wired default mic: on Bluetooth it would flip headphones into call mode (why Mic uses capture).
+protocol EchoCapture: AnyObject {
+    func usable(_ device: AVCaptureDevice) -> Bool
+    func start(_ onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws
+    func end()
+}
+final class VoiceProcessingMic: EchoCapture {
+    private var engine: AVAudioEngine?
+    func usable(_ device: AVCaptureDevice) -> Bool {
+        guard Prefs.bool("echoCancel"), let mic = microphones().first(where: { $0.uid == device.uniqueID }) else { return false }
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        let isDefault = audioProp(sys, kAudioHardwarePropertyDefaultInputDevice, AudioDeviceID(0)).first == mic.id
+        return isDefault && ![kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(mic.transport)
+    }
+    func start(_ onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {
+        let e = AVAudioEngine(), input = e.inputNode
+        do {
+            try input.setVoiceProcessingEnabled(true)
+            let fmt = input.outputFormat(forBus: 0)   // several channels (5 on a MacBook); the cleaned voice is the first
+            guard let mono = AVAudioFormat(standardFormatWithSampleRate: fmt.sampleRate, channels: 1) else { throw NSError(domain: "Mic", code: 3) }
+            input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { buf, _ in
+                guard let src = buf.floatChannelData?[0], let one = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buf.frameLength), let dst = one.floatChannelData?[0] else { return }
+                one.frameLength = buf.frameLength; dst.update(from: src, count: Int(buf.frameLength))
+                onBuffer(one)
+            }
+            try e.start(); engine = e
+        } catch {
+            input.removeTap(onBus: 0); try? input.setVoiceProcessingEnabled(false)
+            DispatchQueue.main.async { Prefs.set("echoCancel", false) }   // never try again on this Mac; the plain mic takes over
+            throw error
+        }
+    }
+    func end() {
+        guard let e = engine else { return }
+        e.inputNode.removeTap(onBus: 0); e.stop(); try? e.inputNode.setVoiceProcessingEnabled(false); engine = nil
+    }
+}
 // Opens only the chosen mic. AVAudioEngine opens the default input first, which flips Bluetooth headphones into call mode and keeps them there.
 final class Mic: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var session: AVCaptureSession?, onBuffer: ((AVAudioPCMBuffer) -> Void)?
@@ -293,9 +333,24 @@ final class Mic: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let sessionQueue = DispatchQueue(label: "atticus.mic.session")
     private var generation = 0
     private(set) var isRunning = false
+    static var echo: EchoCapture?   // Zuka: echo-cancelled capture when it can be used (set at launch); nil = the plain capture below
+    private var echoOn = false
     func start(_ device: AVCaptureDevice, sampleRate: Double, _ onBuffer: @escaping (AVAudioPCMBuffer) -> Void, completion: @escaping (Result<Void, Error>) -> Void) {
         stop()
         isRunning = true; let g = generation
+        if let echo = Mic.echo, echo.usable(device) {
+            sessionQueue.async { [self] in
+                var result: Result<Void, Error> = .success(())
+                do { queue.sync { self.onBuffer = onBuffer }; try echo.start { [weak self] buf in self?.queue.async { self?.onBuffer?(buf) } }; echoOn = true }
+                catch { result = .failure(error) }
+                DispatchQueue.main.async { [self] in
+                    guard generation == g else { return }
+                    if case .failure = result { Mic.echo = nil; isRunning = false; return self.start(device, sampleRate: sampleRate, onBuffer, completion: completion) }   // the plain mic, and stop trying
+                    completion(result)
+                }
+            }
+            return
+        }
         sessionQueue.async { [self] in
             let result: Result<Void, Error>
             do {
@@ -320,6 +375,7 @@ final class Mic: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     func stop(completion: @escaping () -> Void = {}) {
         generation += 1; isRunning = false
         sessionQueue.async { [self] in
+            if echoOn { Mic.echo?.end(); echoOn = false }
             session?.stopRunning(); session = nil   // release the device so headphones return to music mode
             queue.sync { onBuffer = nil }
             DispatchQueue.main.async(execute: completion)
@@ -2154,6 +2210,10 @@ final class App: NSObject, WKScriptMessageHandler {
             self?.allowUntil = Date().addingTimeInterval(3)   // hands raise an app for a mouse click, then put the user's app back
             self?.allowUserApp = n.object as? String == "user"   // a voice focus request changes the user's app; a temporary hands raise does not
         }
+        for (name, user) in [("atticus.raise", false), ("atticus.raise.user", true)] {   // the same, as a 5 ms Darwin notification (notifyutil -p): launching this binary to post the distributed one cost ~1 s per "open X"
+            var token: Int32 = 0
+            notify_register_dispatch(name, &token, DispatchQueue.main) { [weak self] _ in self?.allowUntil = Date().addingTimeInterval(3); self?.allowUserApp = user }
+        }
         SFSpeechRecognizer.requestAuthorization { _ in }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
@@ -2839,9 +2899,9 @@ final class App: NSObject, WKScriptMessageHandler {
             pause = item
             DispatchQueue.main.asyncAfter(deadline: .now() + Prefs.num("aheadDelay"), execute: item)
         }
-        if clickTalk {   // no keys to let go of: a 1.3 s pause ends it
+        if clickTalk || toggleTalk {   // no keys to let go of (or press-to-talk): a short pause ends it, so nothing waits for a second press
             quiet?.cancel(); let q = DispatchWorkItem { [weak self] in self?.stop() }; quiet = q
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: q)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (clickTalk ? 1.0 : 1.2), execute: q)
         }
         if !ahead.isEmpty && transcriptKey(rest()) != transcriptKey(ahead) { dropAhead() }   // the user kept talking: that start was for half a sentence
         aheadItem?.cancel()   // a longer pause = the user is probably done: start the AI now, keys still held
@@ -4482,6 +4542,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
         MeetingArchive.writes.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
     }
+    func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: "onboarded") ? settings.open() : onboarding.open()
+        return false
+    }
+}
+
+extension Delegate {
     // wavelength://listen opens the box listening, hands-free (a pause ends it), so a spoken phrase can start her:
     // macOS Vocal Shortcuts ("Hey Zuka") → a Shortcut that opens this link. wavelength://ask?text=… asks in words.
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -4497,10 +4564,6 @@ final class Delegate: NSObject, NSApplicationDelegate {
             default: break
             }
         }
-    }
-    func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        UserDefaults.standard.bool(forKey: "onboarded") ? settings.open() : onboarding.open()
-        return false
     }
 }
 
@@ -7369,6 +7432,7 @@ func checkMic() {
     showNudge(["title": a == "Slack" ? "Huddle detected" : "Meeting detected", "when": "In \(a) · Want Atticus to listen?", "who": "", "context": "", "app": a])
 }
 Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in checkMic() }
+Mic.echo = VoiceProcessingMic()
 let app = App()
 let agentsUI = AgentPanels()
 let routineWake = RoutineWake()

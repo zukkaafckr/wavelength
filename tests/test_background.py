@@ -40,12 +40,12 @@ class BackgroundTests(unittest.TestCase):
                 with self.subTest(words=words):
                     self.assertEqual(atticus.fast(words), 'Opened Fixture.')
                     self.assertEqual(calls[-1], ['open', '-a', 'Fixture'])
-                    self.assertEqual(calls[:-1], [[atticus.APP, '--raise', 'user']] if words.startswith('launch') else [])   # "open" was freed by allow_focus already
+                    self.assertEqual(calls[:-1], [['/usr/bin/notifyutil', '-p', 'atticus.raise.user']] if words.startswith('launch') else [])   # "open" was freed by allow_focus already
             calls.clear()
             with patch.object(atticus, 'move_target', return_value=('Fixture', 'left', 'current')), \
                  patch.object(atticus, 'place', return_value='Fixture window -> left of Main'):
                 self.assertEqual(atticus.fast('launch fixture on the left'), 'Fixture: left.')
-            self.assertEqual(calls[:2], [[atticus.APP, '--raise', 'user'], ['open', '-a', 'Fixture']])   # the inner "open" must not hide that the user asked
+            self.assertEqual(calls[:2], [['/usr/bin/notifyutil', '-p', 'atticus.raise.user'], ['open', '-a', 'Fixture']])   # the inner "open" must not hide that the user asked
 
     def test_settings_and_tool_hints_never_steer_to_focus(self):
         self.assertIn('System settings: shell, defaults or AppleScript first; else open the pane with --bg', atticus.system_prompt(atticus.ASK_FIRST))

@@ -669,9 +669,9 @@ print(json.dumps(atticus.look(cleanup=sys.argv[3] != 'standalone')))
     def test_explicit_focus_marks_the_user_choice_but_temporary_raises_do_not(self):
         with patch.object(atticus.subprocess, 'run') as run:
             atticus.allow_focus('switch to Fixture')
-            self.assertEqual(run.call_args.args[0], [atticus.APP, '--raise', 'user'])
+            self.assertEqual(run.call_args.args[0], ['/usr/bin/notifyutil', '-p', 'atticus.raise.user'])
             atticus.free_focus()
-            self.assertEqual(run.call_args.args[0], [atticus.APP, '--raise'])
+            self.assertEqual(run.call_args.args[0], ['/usr/bin/notifyutil', '-p', 'atticus.raise'])
             run.reset_mock()
             atticus.allow_focus('work in the background')
             run.assert_not_called()

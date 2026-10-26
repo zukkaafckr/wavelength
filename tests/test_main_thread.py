@@ -87,6 +87,7 @@ precondition(!completed.terminated && completed.terminationHandler == nil, "comp
         self.swift('''import Foundation
 protocol AVCaptureAudioDataOutputSampleBufferDelegate {}
 final class AVAudioPCMBuffer {}
+protocol EchoCapture: AnyObject { func usable(_ device: AVCaptureDevice) -> Bool; func start(_ onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws; func end() }
 let AVFormatIDKey = "format", AVSampleRateKey = "rate", AVNumberOfChannelsKey = "channels"
 let AVLinearPCMBitDepthKey = "bits", AVLinearPCMIsFloatKey = "float", AVLinearPCMIsNonInterleaved = "interleaved"
 let kAudioFormatLinearPCM = 1

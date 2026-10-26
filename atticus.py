@@ -1115,8 +1115,10 @@ ARRANGE = re.compile(r'--place\b|AXFullScreen|AXMinimized|\bset (bounds|position
 def free_focus(user=False):
     """Atticus.app's focus guard stands aside for 3 s: a move or full screen brings the app forward on purpose. Short, so a later
     background step (Spotify starting) still stays behind."""
-    try: subprocess.run([APP, '--raise'] + (['user'] if user else []), capture_output=True, timeout=1)
-    except (OSError, subprocess.TimeoutExpired): pass
+    try: subprocess.run(['/usr/bin/notifyutil', '-p', 'atticus.raise.user' if user else 'atticus.raise'], capture_output=True, timeout=1)   # Zuka: ~5 ms; launching the app binary to say this took ~1 s
+    except (OSError, subprocess.TimeoutExpired):
+        try: subprocess.run([APP, '--raise'] + (['user'] if user else []), capture_output=True, timeout=1)
+        except (OSError, subprocess.TimeoutExpired): pass
 
 
 def allow_focus(task):
@@ -1528,12 +1530,25 @@ def youtube_play(query):
         said = youtube_play(query)
         return said and said + ' Say "play" and a name for something else.'
     url = 'https://www.youtube.com/results?search_query=' + urllib.parse.quote_plus(query)
+    cache = os.path.join(DIR, 'youtube-cache.json'); key = ' '.join(query.lower().split())
+    try:
+        with open(cache) as f: known = json.load(f)
+    except (OSError, ValueError): known = {}
+    if isinstance(known.get(key), str) and re.fullmatch(r'[\w-]{11}', known[key]):   # Zuka: a song played before starts at once, no page fetch
+        target = f'https://www.youtube.com/watch?v={known[key]}'
+        if youtube_tab(target):
+            fast.cmds = [f'open {shlex.quote(target)}']
+            return f'Playing {query} on YouTube.'
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh)', 'Accept-Language': 'en'})
         vid = re.search(r'"videoId":"([\w-]{11})"', urllib.request.urlopen(req, timeout=6).read().decode('utf-8', 'ignore'))
     except (OSError, ValueError):
         vid = None   # offline or blocked: show the search instead
     target = f'https://www.youtube.com/watch?v={vid[1]}' if vid else url
+    if vid:
+        known[key] = vid[1]
+        try: private_json(cache, dict(list(known.items())[-300:]))
+        except OSError: pass
     if not youtube_tab(target): return None
     fast.cmds = [f'open {shlex.quote(target)}']
     return f'Playing {query} on YouTube.' if vid else f'Here is YouTube for {query}.'
