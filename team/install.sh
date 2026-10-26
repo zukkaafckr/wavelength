@@ -48,7 +48,23 @@ if ! xcode-select -p >/dev/null 2>&1; then
 fi
 CLAUDE_BIN=$(command -v claude || true)
 for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do [ -n "$CLAUDE_BIN" ] || { [ -x "$c" ] && CLAUDE_BIN="$c"; }; done
-[ -n "$CLAUDE_BIN" ] || { echo "Claude Code was not found. Install it from https://claude.com/claude-code, sign in, then run this again."; exit 1; }
+# No separate Claude Code install? The Claude desktop app ships one: a small launcher in ~/.local/bin runs its newest copy (it follows app updates).
+if [ -z "$CLAUDE_BIN" ] && ls -d "$HOME/Library/Application Support/Claude/claude-code"/*/*/claude.app/Contents/MacOS/claude >/dev/null 2>&1; then
+  mkdir -p "$HOME/.local/bin"
+  cat > "$HOME/.local/bin/claude" <<'SHIM'
+#!/bin/zsh
+# Launches the newest Claude Code CLI bundled with the Claude desktop app.
+bin=$(ls -d "$HOME/Library/Application Support/Claude/claude-code"/*/*/claude.app/Contents/MacOS/claude 2>/dev/null | sort -V | tail -1)
+[ -z "$bin" ] && { echo "Claude Code CLI not found in the desktop app bundle" >&2; exit 1; }
+exec "$bin" "$@"
+SHIM
+  chmod +x "$HOME/.local/bin/claude"; CLAUDE_BIN="$HOME/.local/bin/claude"
+  note "Using the Claude Code that comes with the Claude desktop app (no separate install needed)"
+fi
+[ -n "$CLAUDE_BIN" ] || { echo "Claude Code was not found. Install the Claude desktop app (claude.ai/download) and open it once, or Claude Code from https://claude.com/claude-code, then run this again."; exit 1; }
+if ! "$CLAUDE_BIN" auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+  echo "Claude Code needs a one-time sign-in. Run:  $CLAUDE_BIN auth login   (a browser page opens: click Authorize), then run this again."; exit 1
+fi
 note "Checked: macOS $(sw_vers -productVersion), command line tools, Claude Code"
 
 # 1. build the app (build.sh stages the compile first, so a failed build leaves any older app alone)
