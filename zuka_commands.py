@@ -3,6 +3,8 @@
 t is the already-normalised lowercase request. Returns a short spoken reply, or None
 when the phrase is not one of these commands. Never raises.
 """
+import copy
+import functools
 import json
 import os
 import re
@@ -12,30 +14,31 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DOWNLOADS = Path.home() / 'Downloads'
 APP = os.path.expanduser('~/Applications/Atticus.app/Contents/MacOS/Atticus')
-BRAVE = 'Brave Browser'
-PREMIERE = 'Adobe Premiere Pro 2026'
-MEDIA_ENCODER = 'Adobe Media Encoder 2026'
-TASK_RE = re.compile(r'^\d{2}[A-Z]{3}\d{2}_\d+_.+$')
 VIDEO_EXT = ('.mp4', '.mov')
-SUBFOLDERS = ['00_Reference/Product', '02_Images', '03_StepCards', '04_VO_Audio/_raw',
-              '04_VO_Audio/_timings', '05_Premiere', '05_TextFrames', '06_Exports/Premiere',
-              '06_Exports/Submagic']
-GMAIL_URL = 'https://mail.google.com/mail/u/0/#inbox'
-CLICKUP_URL = 'https://app.clickup.com'
-TOOLS = {
-    'submagic': ('Submagic', 'https://app.submagic.co'),
-    'higgsfield': ('Higgsfield', 'https://higgsfield.ai'),
-    'atria': ('Atria', 'https://app.tryatria.com'),
-    'clickup': ('ClickUp', 'https://app.clickup.com'),
-    'drive': ('Drive', 'https://drive.google.com'),
-    'gmail': ('Gmail', 'https://mail.google.com'),
-    'whatsapp': ('WhatsApp', 'https://web.whatsapp.com'),
-    'chatgpt': ('ChatGPT', 'https://chatgpt.com'),
+WORKFLOW = os.path.expanduser('~/.config/atticus/workflow.json')   # per-person setup; see workflow.example.json
+
+# Browsers Zuka can drive. Chromium ones share one AppleScript dictionary; Safari differs (tab name, current tab).
+BROWSER_IDS = {'com.brave.browser': 'Brave Browser', 'com.google.chrome': 'Google Chrome',
+               'company.thebrowser.browser': 'Arc', 'com.microsoft.edgemac': 'Microsoft Edge',
+               'com.apple.safari': 'Safari'}
+BROWSER_SHORT = {'Brave Browser': 'Brave', 'Google Chrome': 'Chrome', 'Microsoft Edge': 'Edge'}
+CHROMIUM = ('Brave Browser', 'Google Chrome', 'Arc', 'Microsoft Edge')
+
+# What a person with no workflow.json gets: nothing work-specific.
+DEFAULTS = {
+    'browser': None,   # None = the Mac's default browser
+    'tools': {'gmail': ['Gmail', 'https://mail.google.com'],
+              'whatsapp': ['WhatsApp', 'https://web.whatsapp.com'],
+              'drive': ['Drive', 'https://drive.google.com'],
+              'chatgpt': ['ChatGPT', 'https://chatgpt.com']},
+    'startDay': {'sites': ['gmail'], 'apps': [], 'openTaskFolder': False},
+    'editMode': {'apps': [], 'openTaskFolder': False},
+    'tasks': None,     # None = task folders not set up
 }
-TYPES = {'video': 'Video', 'iteration': 'Iteration', 'hookiteration': 'HookIteration',
-         'ugc': 'UGC', 'static': 'Static'}
+TASK_DEFAULTS = {'folder': None, 'nameFormat': '{date}_{batch}_{name}_{type}', 'dateFormat': '%d%b%y',
+                 'types': {}, 'defaultType': 'Video', 'subfolders': [], 'exports': {}}
+NO_TASKS = "Task folders aren't set up for you yet, J. You can set them up in your setup."
 FAIL = "That one slipped past me, J. Try again in a moment."
 
 
@@ -63,20 +66,120 @@ def _open_app(name):
     return _run(['open', '-a', name], 10).returncode == 0
 
 
-def _open_brave(url):
-    return _run(['open', '-a', BRAVE, url], 10).returncode == 0
+@functools.lru_cache(maxsize=1)
+def _default_browser():
+    """The Mac's default browser (https handler) as an app name; Safari if unknown."""
+    try:
+        out = _run(['defaults', 'read', 'com.apple.LaunchServices/com.apple.launchservices.secure', 'LSHandlers'], 5).stdout or ''
+        for blk in re.findall(r'\{[^{}]*\}', out):
+            if re.search(r'LSHandlerURLScheme\s*=\s*"?https"?\s*;', blk):
+                m = re.search(r'LSHandlerRole(?:All|Viewer)\s*=\s*"?([\w.\-]+)"?\s*;', blk)
+                if m and m.group(1).lower() in BROWSER_IDS:
+                    return BROWSER_IDS[m.group(1).lower()]
+    except Exception:
+        pass
+    return 'Safari'
+
+
+def _str_list(v):
+    return [x for x in v if isinstance(x, str) and x.strip()] if isinstance(v, list) else []
+
+
+def _workflow():
+    """This person's setup from WORKFLOW merged over DEFAULTS. Never raises; bad or missing file = defaults."""
+    try:
+        with open(WORKFLOW) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    w = copy.deepcopy(DEFAULTS)
+    b = data.get('browser')
+    w['browser'] = b.strip() if isinstance(b, str) and b.strip() else _default_browser()
+    tools = data.get('tools')
+    if isinstance(tools, dict):
+        w['tools'] = {str(k).lower().strip(): [v[0], v[1]] for k, v in tools.items()
+                      if isinstance(v, (list, tuple)) and len(v) == 2 and all(isinstance(x, str) and x for x in v)}
+    for key, bools in (('startDay', ('sites', 'apps')), ('editMode', ('apps',))):
+        d = data.get(key)
+        if isinstance(d, dict):
+            for k in bools:
+                if k in d and isinstance(d[k], list):
+                    w[key][k] = [x for x in d[k] if isinstance(x, str) or (isinstance(x, list) and len(x) == 2)] if k == 'sites' else _str_list(d[k])
+            if isinstance(d.get('openTaskFolder'), bool):
+                w[key]['openTaskFolder'] = d['openTaskFolder']
+    t = data.get('tasks')
+    if isinstance(t, dict) and isinstance(t.get('folder'), str) and t['folder'].strip():
+        tk = copy.deepcopy(TASK_DEFAULTS)
+        tk['folder'] = Path(os.path.expanduser(t['folder'].strip()))
+        for k in ('nameFormat', 'dateFormat', 'defaultType'):
+            if isinstance(t.get(k), str) and t[k].strip():
+                tk[k] = t[k].strip()
+        if '{batch}' not in tk['nameFormat']:
+            tk['nameFormat'] = TASK_DEFAULTS['nameFormat']
+        if isinstance(t.get('types'), dict):
+            tk['types'] = {str(k).lower().replace(' ', ''): str(v) for k, v in t['types'].items() if v}
+        tk['subfolders'] = _str_list(t.get('subfolders'))
+        if isinstance(t.get('exports'), dict):
+            tk['exports'] = {str(k): v for k, v in t['exports'].items() if isinstance(v, str) and v.strip()}
+        w['tasks'] = tk
+    return w
+
+
+def _browser():
+    return _workflow()['browser']
+
+
+def _short(b):
+    return BROWSER_SHORT.get(b, b)
+
+
+def _is_safari(b):
+    return b.lower().startswith('safari')
+
+
+def _app_short(name):
+    """'Adobe Foo Pro 2026' -> 'Foo' for speech."""
+    n = re.sub(r'^Adobe\s+', '', name.strip())
+    n = re.sub(r'\s+\d{4}$', '', n)
+    return re.sub(r'\s+Pro$', '', n) or name
+
+
+def _open_browser(url):
+    return _run(['open', '-a', _browser(), url], 10).returncode == 0
+
+
+def _task_re(tk):
+    """Regex for a task folder name under the configured nameFormat (group 'batch')."""
+    fmt = tk['nameFormat']
+    fmt = fmt[:fmt.index('{batch}') + len('{batch}')]
+    date = ''.join({'d': r'\d{2}', 'b': '[A-Za-z]{3}', 'B': '[A-Za-z]+', 'y': r'\d{2}', 'Y': r'\d{4}', 'm': r'\d{2}',
+                    'j': r'\d{3}', 'a': '[A-Za-z]{3}', 'A': '[A-Za-z]+'}.get(c, '[^_]+?') if prev == '%' else ('' if c == '%' else re.escape(c))
+                   for prev, c in zip(' ' + tk['dateFormat'], tk['dateFormat']))
+    out, i = '', 0
+    for m in re.finditer(r'\{(\w+)\}', fmt):
+        out += re.escape(fmt[i:m.start()])
+        out += {'date': date, 'batch': r'(?P<batch>\d+)'}.get(m.group(1), '.+?')
+        i = m.end()
+    return re.compile('^' + out + re.escape(fmt[i:]) + '.+$')
 
 
 def _newest_task_folder():
+    tk = _workflow()['tasks']
+    if not tk:
+        return None
     try:
-        dirs = [p for p in DOWNLOADS.iterdir() if p.is_dir() and TASK_RE.match(p.name)]
+        rx = _task_re(tk)
+        dirs = [p for p in tk['folder'].iterdir() if p.is_dir() and rx.match(p.name)]
     except OSError:
         return None
     return max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
 
 
 def _batch_of(folder):
-    return folder.name.split('_')[1]
+    m = _task_re(_workflow()['tasks']).match(folder.name)
+    return m.group('batch') if m else folder.name
 
 
 def _open_folder(p):
@@ -87,20 +190,19 @@ def _num(n):
     return f'{n:,}'
 
 
-# ---------------------------------------------------------------- brave tabs
-def _brave_titles():
-    """Titles of every Brave tab (one per line). [] if Brave isn't running."""
-    script = ('if application "Brave Browser" is not running then return ""\n'
-              'set out to ""\n'
-              'tell application "Brave Browser"\n'
-              ' repeat with w in windows\n'
-              '  repeat with ti in (get title of every tab of w)\n'
-              '   set out to out & ti & linefeed\n'
-              '  end repeat\n'
-              ' end repeat\n'
-              'end tell\n'
-              'return out')
-    out = _osa(script)
+# ---------------------------------------------------------------- browser tabs
+def _titles_script(b, cond=None):
+    """AppleScript listing tab titles (one per line); cond = optional host filter on the tab URL."""
+    tw = 'name' if _is_safari(b) else 'title'
+    body = ('  repeat with ti in (get %s of every tab of w)\n   set out to out & ti & linefeed\n  end repeat\n' % tw) if not cond else \
+           ('  repeat with tb in tabs of w\n   if (URL of tb) contains "%s" then set out to out & (%s of tb) & linefeed\n  end repeat\n' % (cond, tw))
+    return ('if application "%s" is not running then return ""\nset out to ""\ntell application "%s"\n'
+            ' repeat with w in windows\n%s end repeat\nend tell\nreturn out' % (b, b, body))
+
+
+def _browser_titles():
+    """Titles of every tab in the browser (one per line). [] if it isn't running."""
+    out = _osa(_titles_script(_browser()))
     return [x.strip() for x in out.split('\n') if x.strip()]
 
 
@@ -137,7 +239,7 @@ def _unread_reply(info):
     else:
         parts += [(f'{_num(n)} unread in {nm}' if n else f'nothing unread in {nm}') for nm, n in gm]
     if not parts:
-        return "Neither WhatsApp nor Gmail is open in Brave. Say open whatsapp, or open gmail."
+        return f"Neither WhatsApp nor Gmail is open in {_short(_browser())}. Say open whatsapp, or open gmail."
     text = parts[0][0].upper() + parts[0][1:]
     if len(parts) > 1:
         text += ', ' + ', '.join(parts[1:-1]) + (', ' if len(parts) > 2 else '') + 'and ' + parts[-1]
@@ -149,7 +251,7 @@ def _unread_reply(info):
 
 def _cheap_unread():
     try:
-        info = _parse_titles(_brave_titles())
+        info = _parse_titles(_browser_titles())
         if info['whatsapp'] is None and not info['gmail']:
             return ''
         return ' ' + _unread_reply(info)
@@ -157,30 +259,29 @@ def _cheap_unread():
         return ''
 
 
+def _focus_script(b, host):
+    if _is_safari(b):
+        head, guard, tail = ' repeat with wi from 1 to (count of windows)\n  set w to window wi\n', '', ''
+        sel = '     set current tab of w to tab ti of w\n'
+        loop = '   repeat with ti from 1 to (count of tabs of w)\n'
+    else:
+        head = ' repeat with wi from 1 to (count of windows)\n  set w to window wi\n  if (count of tabs of w) > 1 then\n'
+        tail = '  end if\n'
+        sel = '     set active tab index of w to ti\n'
+        loop = '   repeat with ti from 1 to (count of tabs of w)\n'
+    return ('if application "%s" is not running then return "none"\ntell application "%s"\n' % (b, b) + head + loop +
+            f'    if (URL of tab ti of w) contains "{host}" then\n' + sel +
+            '     set index of w to 1\n     activate\n     return "found"\n    end if\n   end repeat\n' + tail +
+            ' end repeat\nend tell\nreturn "none"')
+
+
 def _focus_or_open(host, url):
-    script = ('if application "Brave Browser" is not running then return "none"\n'
-              'tell application "Brave Browser"\n'
-              ' repeat with wi from 1 to (count of windows)\n'
-              '  set w to window wi\n'
-              '  if (count of tabs of w) > 1 then\n'
-              '   repeat with ti from 1 to (count of tabs of w)\n'
-              f'    if (URL of tab ti of w) contains "{host}" then\n'
-              '     set active tab index of w to ti\n'
-              '     set index of w to 1\n'
-              '     activate\n'
-              '     return "found"\n'
-              '    end if\n'
-              '   end repeat\n'
-              '  end if\n'
-              ' end repeat\n'
-              'end tell\n'
-              'return "none"')
     try:
-        if _osa(script) == 'found':
+        if _osa(_focus_script(_browser(), host)) == 'found':
             return True
     except Exception:
         pass
-    return _open_brave(url)
+    return _open_browser(url)
 
 
 # ---------------------------------------------------------------- commands
@@ -189,7 +290,10 @@ _START = re.compile(r"^(start (my|the) (day|work)|start work|lets (start|begin)(
                     r"morning (setup|set up|routine)|begin (my|the) day|kick ?off (my|the) day)$")
 _EDIT = re.compile(r"^(edit mode|lets edit|editing time|time to edit|editing mode|lets get editing)$")
 _EXPORT = re.compile(r"^(export check|check (my |the )?exports|how many exports( (are there|do i have|are done))?|exports? count|count (my |the )?exports)$")
-_OPEN = re.compile(r"^open (up )?(my |the )?(" + '|'.join(TOOLS) + r")( tab| site| page| app| website)?$")
+def _open_re(tools):
+    return re.compile(r"^open (up )?(my |the )?(" + '|'.join(re.escape(k) for k in sorted(tools, key=len, reverse=True)) + r")( tab| site| page| app| website)?$")
+
+
 _UNREAD = re.compile(r"^(any(thing)? new( messages| mail| emails?)?|(do i have )?any (new |unread )?(messages|mail|emails?|whatsapps?)( for me)?|"
                      r"(check|read) (my )?(whatsapp|gmail|mail|emails?|messages|inbox)( messages| unread)?|unread( messages| mail| emails?)?|"
                      r"how many (unread|new)( messages| mails?| emails?)?( do i have)?|whats new|new (messages|mail|emails?))$")
@@ -199,26 +303,53 @@ _CAL_TODAY = re.compile(r"^((whats|what is) )?(on )?(my )?(calendar|schedule|age
 _NEWTASK = re.compile(r"^(new|create|make|add|start) (a |the )?(new )?task( folder)?( number| #)? ?#?(\d{2,4}) (.+)$")
 
 
+def _site_ref(w, s):
+    if isinstance(s, (list, tuple)) and len(s) == 2:
+        return s[0], s[1]
+    t = w['tools'].get(str(s).lower())
+    return (t[0], t[1]) if t else (None, None)
+
+
+def _say_list(bits):
+    return bits[0] if len(bits) == 1 else ', '.join(bits[:-1]) + ' and ' + bits[-1]
+
+
 def _start_day():
+    w = _workflow()
+    sd = w['startDay']
     pre = _cheap_unread()
-    _open_brave(GMAIL_URL)
-    _open_brave(CLICKUP_URL)
-    folder = _newest_task_folder()
+    bits = []
+    for s in sd['sites']:
+        label, url = _site_ref(w, s)
+        if url:
+            _open_browser(url)
+            bits.append(label)
+    folder = _newest_task_folder() if sd['openTaskFolder'] else None
     if folder:
         _open_folder(folder)
-    _open_app(PREMIERE)
-    bits = ['Gmail', 'ClickUp'] + ([f'your {_batch_of(folder)} folder'] if folder else []) + ['Premiere']
-    return f"Morning, J. {', '.join(bits[:-1])} and {bits[-1]} are up." + pre
+        bits.append(f'your {_batch_of(folder)} folder')
+    for a in sd['apps']:
+        _open_app(a)
+        bits.append(_app_short(a))
+    if not bits:
+        return "Morning, J. You haven't set up a start-of-day routine yet, but you can in your setup." + pre
+    return f"Morning, J. {_say_list(bits)} {'is' if len(bits) == 1 else 'are'} up." + pre
 
 
 def _edit_mode():
-    _open_app(PREMIERE)
-    _open_app(MEDIA_ENCODER)
-    folder = _newest_task_folder()
+    em = _workflow()['editMode']
+    if not em['apps'] and not em['openTaskFolder']:
+        return "Edit mode isn't set up for you yet, J. You can set it up in your setup."
+    for a in em['apps']:
+        _open_app(a)
+    names = [_app_short(a) for a in em['apps']]
+    folder = _newest_task_folder() if em['openTaskFolder'] else None
     if folder:
         _open_folder(folder)
-        return f"Edit mode. Premiere, Media Encoder and your {_batch_of(folder)} folder are up."
-    return "Edit mode. Premiere and Media Encoder are up. I couldn't find a task folder."
+        return f"Edit mode. {_say_list(names + [f'your {_batch_of(folder)} folder'])} {'is' if len(names) == 0 else 'are'} up."
+    verb = 'is' if len(names) == 1 else 'are'
+    tail = " I couldn't find a task folder." if em['openTaskFolder'] else ''
+    return f"Edit mode. {_say_list(names)} {verb} up.{tail}" if names else "Edit mode." + tail
 
 
 def _count_videos(d):
@@ -229,16 +360,19 @@ def _count_videos(d):
 
 
 def _export_check():
+    tk = _workflow()['tasks']
+    if not tk:
+        return NO_TASKS
+    if not tk['exports']:
+        return "I don't have export folders set up for you yet, J. You can set them in your setup."
     folder = _newest_task_folder()
     if not folder:
-        return "I can't find a task folder in Downloads."
-    a = _count_videos(folder / '06_Exports' / 'Premiere')
-    b = _count_videos(folder / '06_Exports' / 'Submagic')
-    if a is None and b is None:
+        return f"I can't find a task folder in {tk['folder'].name}."
+    counts = {label: _count_videos(folder / rel) for label, rel in tk['exports'].items()}
+    if all(c is None for c in counts.values()):
         return f"Task {_batch_of(folder)} has no exports folders yet."
-    fa = 'no Premiere folder' if a is None else f'{a} in Premiere'
-    fb = 'no Submagic folder' if b is None else f'{b} in Submagic'
-    return f"Task {_batch_of(folder)}: {fa}, {fb}."
+    parts = [f'no {label} folder' if c is None else f'{c} in {label}' for label, c in counts.items()]
+    return f"Task {_batch_of(folder)}: {', '.join(parts)}."
 
 
 def _camel(words):
@@ -250,32 +384,38 @@ def _unsplit(camel):
 
 
 def _new_task(m):
+    tk = _workflow()['tasks']
+    if not tk:
+        return NO_TASKS
     batch, rest = m.group(6), m.group(7).split()
-    typ = 'Video'
-    if len(rest) >= 2 and rest[-2] + rest[-1] == 'hookiteration':
-        typ, rest = 'HookIteration', rest[:-2]
-    elif len(rest) >= 1 and rest[-1] in TYPES:
-        typ, rest = TYPES[rest[-1]], rest[:-1]
+    typ = tk['defaultType']
+    for n in (3, 2, 1):
+        if len(rest) >= n and ''.join(rest[-n:]) in tk['types']:
+            typ, rest = tk['types'][''.join(rest[-n:])], rest[:-n]
+            break
     if not rest:
         return "What should I call it, J? Say new task, the number, then a name."
     name = _camel(rest)
     now = datetime.now()
-    stamp = f"{now:%d}{now:%b}{now:%y}".upper()
-    folder = DOWNLOADS / f"{stamp}_{batch}_{name}_{typ}"
+    stamp = now.strftime(tk['dateFormat']).upper()
+    base = tk['folder']
+    folder = base / tk['nameFormat'].format(date=stamp, batch=batch, name=name, type=typ)
+    rx = _task_re(tk)
     try:
-        dup = [p for p in DOWNLOADS.iterdir() if p.is_dir() and p.name.split('_')[1:2] == [batch]]
+        dup = [p for p in base.iterdir() if p.is_dir() and (lambda mm: mm and mm.group('batch') == batch)(rx.match(p.name))]
     except OSError:
         dup = []
     if folder.exists() or dup:
-        return f"Task {batch} already exists in Downloads, so I left it alone."
-    for sub in SUBFOLDERS:
+        return f"Task {batch} already exists in {base.name}, so I left it alone."
+    folder.mkdir(parents=True, exist_ok=True)
+    for sub in tk['subfolders']:
         (folder / sub).mkdir(parents=True, exist_ok=True)
     _open_folder(folder)
-    return f"Done. Task {batch}, {_unsplit(name)}, is ready in Downloads."
+    return f"Done. Task {batch}, {_unsplit(name)}, is ready in {base.name}."
 
 
 def _open_tool(key):
-    label, url = TOOLS[key]
+    label, url = _workflow()['tools'][key]
     host = re.sub(r'^https?://', '', url).split('/')[0]
     ok = _focus_or_open(host, url)
     return f"{label}'s up." if ok else f"I couldn't open {label}, J."
@@ -283,9 +423,10 @@ def _open_tool(key):
 
 def _unread():
     try:
-        return _unread_reply(_parse_titles(_brave_titles()))
+        return _unread_reply(_parse_titles(_browser_titles()))
     except Exception:
-        return "I couldn't read your Brave tabs. Is Brave open?"
+        sb = _short(_browser())
+        return f"I couldn't read your {sb} tabs. Is {sb} open?"
 
 
 # ---- any site's unread badge: "check linkedin", "any new messages on instagram"
@@ -297,27 +438,28 @@ SITES = {'linkedin': ('LinkedIn', 'linkedin.com', 'https://www.linkedin.com/mess
          'slack': ('Slack', 'slack.com', 'https://app.slack.com/'),
          'discord': ('Discord', 'discord.com', 'https://discord.com/channels/@me'),
          'twitter': ('X', 'x.com', 'https://x.com/notifications'),
-         'clickup': ('ClickUp', 'clickup.com', 'https://app.clickup.com'),
          'telegram': ('Telegram', 'telegram.org', 'https://web.telegram.org/'),
          'whatsapp': ('WhatsApp', 'whatsapp.com', 'https://web.whatsapp.com'),
          'gmail': ('Gmail', 'mail.google.com', 'https://mail.google.com/mail/u/0/#inbox')}
-_SITE = re.compile(r"^(?:(?:any(?:thing)? |check |read |see |show |whats )?(?:new |unread )?(?:messages? |notifications? |dms? |mail |updates? )?(?:on |in |from )?(?:my )?)"
-                   r"(" + '|'.join(sorted(SITES, key=len, reverse=True)) + r")(?: messages?| notifications?| dms?| inbox| updates?)?(?: for me)?$")
+
+
+def _sites():
+    """Built-in sites plus this person's own tools (so 'check <tool>' reads its badge too)."""
+    out = dict(SITES)
+    for k, (label, url) in _workflow()['tools'].items():
+        host = re.sub(r'^https?://(www\.)?', '', url).split('/')[0]
+        out.setdefault(k, (label, host, url))
+    return out
+
+
+def _site_re(sites):
+    return re.compile(r"^(?:(?:any(?:thing)? |check |read |see |show |whats )?(?:new |unread )?(?:messages? |notifications? |dms? |mail |updates? )?(?:on |in |from )?(?:my )?)"
+                      r"(" + '|'.join(re.escape(k) for k in sorted(sites, key=len, reverse=True)) + r")(?: messages?| notifications?| dms?| inbox| updates?)?(?: for me)?$")
 
 
 def _tab_titles(host):
-    """Titles of Brave tabs whose address contains host."""
-    script = ('if application "Brave Browser" is not running then return ""\n'
-              'set out to ""\n'
-              'tell application "Brave Browser"\n'
-              ' repeat with w in windows\n'
-              '  repeat with tb in tabs of w\n'
-              f'   if (URL of tb) contains "{host}" then set out to out & (title of tb) & linefeed\n'
-              '  end repeat\n'
-              ' end repeat\n'
-              'end tell\n'
-              'return out')
-    return [x.strip() for x in _osa(script).split('\n') if x.strip()]
+    """Titles of browser tabs whose address contains host."""
+    return [x.strip() for x in _osa(_titles_script(_browser(), host)).split('\n') if x.strip()]
 
 
 def _badge(titles):
@@ -328,10 +470,10 @@ def _badge(titles):
 
 
 def _site(key):
-    label, host, url = SITES[key]
+    label, host, url = _sites()[key]
     titles = _tab_titles(host)
     if not titles:   # not open: open it quietly, give it a moment to load its badge, then read
-        _open_brave(url)
+        _open_browser(url)
         for _ in range(8):
             time.sleep(1)
             titles = _tab_titles(host)
@@ -471,7 +613,8 @@ def handle(t):
             return _edit_mode()
         if _EXPORT.match(t):
             return _export_check()
-        m = _OPEN.match(t)
+        tools = _workflow()['tools']
+        m = _open_re(tools).match(t) if tools else None
         if m:
             return _open_tool(m.group(3))
         if _UNREAD.match(t):
@@ -483,7 +626,8 @@ def handle(t):
             return _set_voice(_ALIASES[m.group(1)])
         if _KEEP.match(t) and time.time() - _pick().get('at', 0) < 600:
             return "Done, J. That's my voice now."
-        m = _SITE.match(t)
+        sites = _sites()
+        m = _site_re(sites).match(t)
         if m and t != m.group(1):   # a bare site name is not a check
             return _site(m.group(1))
         if _CAL_NEXT.match(t):

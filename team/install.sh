@@ -6,19 +6,22 @@
 #                 Live replies always use the light voice. Implies --voice.
 #   --pick VOICE  which voice: warm (default), bright, smooth, calm, british, indian, jarvis, deep, friendly-male, indian-male.
 #                 Change it any time by saying "voice options" or "try the british voice".
+#   --checkins T  spoken check-in times, Mon-Sat (default 10:00,14:30,18:30), or off
 #   --ram-gb N    accepted and ignored (older instructions used it)
 #   DRY_RUN=1     print what would happen, change nothing
 # Never uses sudo. Everything lands in your home folder.
 set -e
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TEAM="$REPO/team"
-VOICE=0; EXPR=0; RAM=""; OPEN=1; PICK=""; DRY="${DRY_RUN:-}"
+VOICE=0; EXPR=0; RAM=""; OPEN=1; PICK=""; CHECKINS="10:00,14:30,18:30"; DRY="${DRY_RUN:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --voice) VOICE=1 ;;
     --expressive) VOICE=1; EXPR=1 ;;
     --ram-gb) shift; RAM="${1:-}" ;;
     --no-open) OPEN=0 ;;
+    --checkins) shift; CHECKINS="${1:-}"
+      echo "$CHECKINS" | grep -Eq '^(off|([01]?[0-9]|2[0-3]):[0-5][0-9](,([01]?[0-9]|2[0-3]):[0-5][0-9])*)$' || { echo "--checkins: off, or times like 10:00,14:30,18:30"; exit 2; } ;;
     --pick) shift; PICK="${1:-}"; VOICE=1
       case "$PICK" in warm|bright|smooth|calm|british|indian|jarvis|deep|friendly-male|indian-male) ;; *) echo "--pick: one of warm, bright, smooth, calm, british, indian, jarvis, deep, friendly-male, indian-male"; exit 2 ;; esac ;;
     *) echo "Unknown option: $1"; exit 2 ;;
@@ -146,6 +149,9 @@ fi
 
 # 4. check-ins (spoken hellos at set times, free, weekdays)
 if [ -n "$DRY" ]; then echo "  [dry-run] install the check-ins (zuka-checkin + com.zuka.checkin agent)"; echo; echo "Dry run finished. Nothing was changed."; exit 0; fi
+if [ "$CHECKINS" = off ]; then
+  launchctl bootout "gui/$UID_N/com.zuka.checkin" 2>/dev/null || true; rm -f "$LA/com.zuka.checkin.plist"; note "No spoken check-ins (as you chose)"
+else
 cp "$TEAM/checkin/zuka-checkin" "$HOME/.local/share/zuka/zuka-checkin"; chmod +x "$HOME/.local/share/zuka/zuka-checkin"
 {
 cat <<P
@@ -156,13 +162,14 @@ cat <<P
 <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>h=\$(date +%H); if [ \$h -lt 12 ]; then p=morning; elif [ \$h -lt 17 ]; then p=afternoon; else p=evening; fi; exec $HOME/.local/share/zuka/zuka-checkin \$p</string></array>
 <key>StartCalendarInterval</key><array>
 P
-for d in 1 2 3 4 5 6; do for t in "10 0" "14 30" "18 30"; do set -- $t
-  echo "<dict><key>Weekday</key><integer>$d</integer><key>Hour</key><integer>$1</integer><key>Minute</key><integer>$2</integer></dict>"; done; done
+for d in 1 2 3 4 5 6; do for t in $(echo "$CHECKINS" | tr ',' ' '); do h=${t%%:*}; m=${t##*:}
+  echo "<dict><key>Weekday</key><integer>$d</integer><key>Hour</key><integer>$((10#$h))</integer><key>Minute</key><integer>$((10#$m))</integer></dict>"; done; done
 echo "</array>"; echo "</dict></plist>"
 } > "$LA/com.zuka.checkin.plist"
 launchctl bootout "gui/$UID_N/com.zuka.checkin" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_N" "$LA/com.zuka.checkin.plist"
-note "Installed the check-ins (Mon-Sat at 10:00, 14:30 and 18:30, only when you are at the Mac)"
+note "Installed the check-ins (Mon-Sat at $(echo $CHECKINS | sed 's/,/, /g'), only when you are at the Mac)"
+fi
 
 # 5. the voice they picked, the greeting recorder (for voice changes later) and team updates
 mkdir -p "$HOME/.local/share/zuka/greetings-maker"; cp "$TEAM/greetings/make-greetings.py" "$TEAM/greetings/lines.json" "$HOME/.local/share/zuka/greetings-maker/"

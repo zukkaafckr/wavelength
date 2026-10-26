@@ -1482,15 +1482,26 @@ def small_talk(t):
 
 
 def youtube_tab(url):
-    """Zuka: YouTube in J's own Brave, reusing its YouTube tab; a Brave-installed YouTube app would otherwise grab the link."""
-    r = osa('on run argv\nset u to item 1 of argv\ntell application "Brave Browser"\nactivate\nif (count of windows) = 0 then make new window\n'
-            'set home to missing value\nrepeat with w in windows\nif (count of tabs of w) > 1 then\n'   # one-tab windows are installed web apps (YouTube.app): skip them
-            'if home is missing value then set home to w\nset i to 0\nrepeat with t in tabs of w\nset i to i + 1\n'
-            'if URL of t contains "youtube.com" then\nset URL of t to u\nset active tab index of w to i\nset index of w to 1\nreturn "reused"\nend if\n'
-            'end repeat\nend if\nend repeat\nif home is missing value then\nset home to make new window\nset URL of active tab of home to u\nelse\n'
-            'tell home to make new tab with properties {URL:u}\nset index of home to 1\nend if\nreturn "new"\nend tell\nend run', url)
+    """Zuka: YouTube in the person's own browser (workflow.json, else the Mac's default), reusing its YouTube tab; an installed YouTube app would otherwise grab the link."""
+    import zuka_commands
+    b = zuka_commands._workflow()['browser']
+    if b.lower().startswith('safari'):
+        script = ('on run argv\nset u to item 1 of argv\ntell application "Safari"\nactivate\n'
+                  'if (count of windows) = 0 then\nmake new document with properties {URL:u}\nreturn "new"\nend if\n'
+                  'repeat with w in windows\nrepeat with t in tabs of w\n'
+                  'if URL of t contains "youtube.com" then\nset URL of t to u\nset current tab of w to t\nset index of w to 1\nreturn "reused"\nend if\n'
+                  'end repeat\nend repeat\n'
+                  'tell front window to set current tab to (make new tab with properties {URL:u})\nreturn "new"\nend tell\nend run')
+    else:
+        script = ('on run argv\nset u to item 1 of argv\ntell application "@@B@@"\nactivate\nif (count of windows) = 0 then make new window\n'
+                  'set home to missing value\nrepeat with w in windows\nif (count of tabs of w) > 1 then\n'   # one-tab windows are installed web apps (YouTube.app): skip them
+                  'if home is missing value then set home to w\nset i to 0\nrepeat with t in tabs of w\nset i to i + 1\n'
+                  'if URL of t contains "youtube.com" then\nset URL of t to u\nset active tab index of w to i\nset index of w to 1\nreturn "reused"\nend if\n'
+                  'end repeat\nend if\nend repeat\nif home is missing value then\nset home to make new window\nset URL of active tab of home to u\nelse\n'
+                  'tell home to make new tab with properties {URL:u}\nset index of home to 1\nend if\nreturn "new"\nend tell\nend run').replace('@@B@@', b)
+    r = osa(script, url)
     if r in ('reused', 'new'): return True
-    return not subprocess.run(['open', '-a', 'Brave Browser', url], capture_output=True).returncode   # scripting refused: still Brave, never the web app
+    return not subprocess.run(['open', '-a', b, url], capture_output=True).returncode   # scripting refused: still their browser, never the web app
 
 
 def youtube_play(query):

@@ -6,12 +6,25 @@ say "the voice", not "TTS"; say "your Mac's memory", not "RAM"; skip words like 
 
 ## Step 0. Ask first, before you run anything
 
-Use your question tool (AskUserQuestion) to ask these four things (plus one follow-up in question 4 if they choose the natural voice). Do not clone, install or change anything until they answer.
+Everything is theirs: nothing from the person who shared this repo (their name, tools, folders, schedule) carries over. Use your question tool (AskUserQuestion) to ask the questions below, a few at a time. Do not clone, install or change anything until they answer. Offer the defaults so a quick "default" is always fine.
 
 1. "What would you like to name your assistant?" (example: Zuka)
 2. "What should it call you?" (example: J)
 3. "Which Mac do you have, and how much memory does it have?" Check for them first with `sysctl hw.memsize` (divide by 1073741824 for GB) and `sw_vers`, then ask them to confirm what you found. The assistant needs macOS 26 or newer; if they are older, stop and explain kindly.
 4. "Do you want the natural voice, or the free Mac voice?" Explain: the natural voice sounds like a person, is light and fast (about a 350 MB download, replies start almost instantly), works on any Mac including 8 GB ones, and works offline once set up. The free Mac voice is built in, instant, and sounds more robotic. Only if they choose the natural voice, ask one follow-up: "Do you also want extra-expressive greetings?" Explain: the time-of-day hellos are recorded once in a richer, more emotional voice. It is an extra 4 GB download and takes a while, and it is best on a Mac with 16 GB of memory; everyday replies stay in the light voice either way. Default to no.
+
+5. "Which voice should it have?" warm (lively female, the default), bright, smooth, calm, british, indian, jarvis (British male), deep (male), friendly-male, indian-male. Tell them they can hear and switch any time by saying "voice options".
+6. "Which key do you want to hold to talk to it?" Default ⌥Space (they change it in the app's Settings after install if they want another).
+7. "Should it ask before using your Claude plan, and say how much it uses?" Default yes.
+8. "Spoken check-ins during the day?" Default yes, Mon–Sat at 10:00, 14:30 and 18:30. They can pick other times or none.
+9. "Should it greet you when you open it?" Default yes.
+10. About their work, so "start my day", "edit mode", "open my tools", "new task" and "export check" fit them (all optional, "skip" is fine):
+    - which browser they use (check the default for them),
+    - the websites/tools they open every day (ClickUp, Frame.io, Drive, Gmail, WhatsApp...), and what "start my day" should open,
+    - the apps for "edit mode" (Premiere Pro, After Effects, CapCut, DaVinci...),
+    - where their project folders live, how they name them, and which subfolders a new one gets (or none: they can skip task folders),
+    - where their exports go inside a project (for "export check").
+    Write the answers to `~/.config/atticus/workflow.json` after install, starting from `workflow.example.json` in the repo (keep its keys; leave out anything they skipped so the defaults apply). Never copy another person's workflow file.
 
 Name and call-name: letters, numbers, spaces and hyphens only. If they want an accent or an apostrophe, suggest the plain spelling.
 
@@ -22,10 +35,12 @@ Name and call-name: letters, numbers, spaces and hyphens only. If they want an a
 3. Run `bash team/install.sh` with the right flags:
    - add `--voice` only if they chose the natural voice
    - add `--expressive` as well (`--voice --expressive`) only if they chose the extra-expressive greetings
+   - add `--pick VOICE` with their voice (question 5), `--checkins off` or `--checkins "09:30,13:00,18:00"` if they changed question 8
    - no memory flag is needed any more (`--ram-gb` is accepted and ignored)
    - Examples: `bash team/install.sh --voice` or `bash team/install.sh --voice --expressive`
    The natural voice download is small (about 350 MB); the extra-expressive option is large (about 4 GB), so tell them it will take a while and keep them company. Never use sudo. If a step needs something missing (Claude Code, Apple's command line tools, uv for the voice), tell them the one thing to do, then rerun.
-4. The installer opens the app. If it did not, open `~/Applications/Atticus.app` (it shows up as **Wavelength** in Spotlight and the Dock; menu items and replies use their assistant's name).
+4. Their other answers, after the installer finishes: write `~/.config/atticus/workflow.json` (question 10). Quit the app first if questions 7 or 9 were "no" (`osascript -e 'quit app "Atticus"'`, wait until it has quit), then set `usageCheck` and/or `greet` to false in `~/.config/atticus/settings.json`, and open it again; editing settings while the app runs gets overwritten.
+5. The installer opens the app. If it did not, open `~/Applications/Atticus.app` (it shows up as **Wavelength** in Spotlight and the Dock; menu items and replies use their assistant's name).
 
 ## Step 2. Walk them through permissions
 

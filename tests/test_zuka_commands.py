@@ -12,12 +12,107 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import zuka_commands as z  # noqa: E402
 
 
+REAL_DEFAULT = z._default_browser
+EDITOR = {
+ "browser": "Brave Browser",
+ "tools": {
+  "submagic": [
+   "Submagic",
+   "https://app.submagic.co"
+  ],
+  "higgsfield": [
+   "Higgsfield",
+   "https://higgsfield.ai"
+  ],
+  "atria": [
+   "Atria",
+   "https://app.tryatria.com"
+  ],
+  "clickup": [
+   "ClickUp",
+   "https://app.clickup.com"
+  ],
+  "drive": [
+   "Drive",
+   "https://drive.google.com"
+  ],
+  "gmail": [
+   "Gmail",
+   "https://mail.google.com"
+  ],
+  "whatsapp": [
+   "WhatsApp",
+   "https://web.whatsapp.com"
+  ],
+  "chatgpt": [
+   "ChatGPT",
+   "https://chatgpt.com"
+  ]
+ },
+ "startDay": {
+  "sites": [
+   [
+    "Gmail",
+    "https://mail.google.com/mail/u/0/#inbox"
+   ],
+   "clickup"
+  ],
+  "apps": [
+   "Adobe Premiere Pro 2026"
+  ],
+  "openTaskFolder": True
+ },
+ "editMode": {
+  "apps": [
+   "Adobe Premiere Pro 2026",
+   "Adobe Media Encoder 2026"
+  ],
+  "openTaskFolder": True
+ },
+ "tasks": {
+  "folder": "~/Downloads",
+  "nameFormat": "{date}_{batch}_{name}_{type}",
+  "dateFormat": "%d%b%y",
+  "types": {
+   "video": "Video",
+   "iteration": "Iteration",
+   "hookiteration": "HookIteration",
+   "ugc": "UGC",
+   "static": "Static"
+  },
+  "defaultType": "Video",
+  "subfolders": [
+   "00_Reference/Product",
+   "02_Images",
+   "03_StepCards",
+   "04_VO_Audio/_raw",
+   "04_VO_Audio/_timings",
+   "05_Premiere",
+   "05_TextFrames",
+   "06_Exports/Premiere",
+   "06_Exports/Submagic"
+  ],
+  "exports": {
+   "Premiere": "06_Exports/Premiere",
+   "Submagic": "06_Exports/Submagic"
+  }
+ }
+}   # a sample editor's workflow.json
+
+
 class Base(unittest.TestCase):
+    wf = 'editor'   # 'editor' = the sample editor's workflow.json; None = no file at all; a dict/str = that file's content
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.dl = Path(self.tmp.name)
-        p = mock.patch.object(z, 'DOWNLOADS', self.dl)
+        self.dl = Path(self.tmp.name) / 'Downloads'
+        self.dl.mkdir()
+        self.wfile = Path(self.tmp.name) / 'workflow.json'
+        self.set_wf(self.wf)
+        p = mock.patch.object(z, 'WORKFLOW', str(self.wfile))
         p.start(); self.addCleanup(p.stop)
+        d = mock.patch.object(z, '_default_browser', return_value='Google Chrome')
+        d.start(); self.addCleanup(d.stop)
         self.calls = []
 
         def fake_run(args, timeout=10, inp=None):
@@ -30,6 +125,14 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def set_wf(self, v):
+        if v == 'editor':
+            v = json.loads(json.dumps(EDITOR)); v['tasks']['folder'] = str(self.dl)
+        if v is None:
+            self.wfile.unlink(missing_ok=True)
+        else:
+            self.wfile.write_text(v if isinstance(v, str) else json.dumps(v))
 
     def mk(self, name, age=0):
         d = self.dl / name
@@ -63,9 +166,9 @@ class Matching(Base):
                 c.assert_called_with(True)
 
     def test_open_tools(self):
-        for k in z.TOOLS:
+        for k in EDITOR['tools']:
             with mock.patch.object(z, '_focus_or_open', return_value=True):
-                self.assertEqual(z.handle(f'open {k}'), f"{z.TOOLS[k][0]}'s up.")
+                self.assertEqual(z.handle(f'open {k}'), f"{EDITOR['tools'][k][0]}'s up.")
 
     def test_negative(self):
         for p in ['open premiere', 'open safari', 'how is the export going', 'what is the weather',
@@ -79,7 +182,7 @@ class Folders(Base):
         stamp = datetime.now().strftime('%d%b%y').upper()
         d = self.dl / f'{stamp}_473_CopperStory_Video'
         self.assertTrue(d.is_dir())
-        for s in z.SUBFOLDERS:
+        for s in EDITOR['tasks']['subfolders']:
             self.assertTrue((d / s).is_dir(), s)
         self.assertEqual(r, 'Done. Task 473, Copper Story, is ready in Downloads.')
         self.assertIn(['open', str(d)], self.calls)
@@ -139,9 +242,9 @@ class Titles(Base):
         self.assertEqual(z._unread_reply(info), '58 unread on WhatsApp, and 1,650 unread in your Gmail.')
 
     def test_multi_gmail(self):
-        info = z._parse_titles(['Inbox (12) - jay@hoa.com - Gmail', 'Inbox (1,001) - ps@gmail.com - Gmail', '(3) WhatsApp'])
+        info = z._parse_titles(['Inbox (12) - sam@studio.com - Gmail', 'Inbox (1,001) - ps@gmail.com - Gmail', '(3) WhatsApp'])
         r = z._unread_reply(info)
-        self.assertIn('12 unread in jay', r)
+        self.assertIn('12 unread in sam', r)
         self.assertIn('1,001 unread in ps', r)
         self.assertIn('3 unread on WhatsApp', r)
 
@@ -241,10 +344,6 @@ class NeverRaises(Base):
             self.assertIsNone(z.handle(v))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class VoicePickTests(unittest.TestCase):
     def setUp(self):
         import tempfile
@@ -275,3 +374,110 @@ class VoicePickTests(unittest.TestCase):
         Path(g, 'ack-1.wav').write_text('re-recorded')
         z.handle('go back to your original voice')
         self.assertEqual(Path(g, 'ack-1.wav').read_text(), 'original')
+
+
+class Generic(Base):
+    wf = None
+
+    def test_no_file_defaults(self):
+        w = z._workflow()
+        self.assertEqual(w['browser'], 'Google Chrome')
+        self.assertEqual(set(w['tools']), {'gmail', 'whatsapp', 'drive', 'chatgpt'})
+        self.assertIsNone(w['tasks'])
+        self.assertEqual(w['startDay'], {'sites': ['gmail'], 'apps': [], 'openTaskFolder': False})
+
+    def test_replies_have_no_work_specific_names(self):
+        replies = [z.handle(p) for p in ['start my day', 'edit mode', 'export check', 'new task 55 foo bar',
+                                         'open gmail', 'open drive', 'unread']]
+        self.assertTrue(all(isinstance(r, str) for r in replies))
+        for r in replies:
+            for bad in ('Premiere', 'Submagic', 'Atria', 'Higgsfield', 'ClickUp', 'Brave', 'Media Encoder'):
+                self.assertNotIn(bad, r)
+        flat = ' '.join(' '.join(c) for c in self.calls)
+        for bad in ('Premiere', 'Brave', 'clickup'):
+            self.assertNotIn(bad, flat)
+        self.assertIn('-a Google Chrome https://mail.google.com', flat)
+
+    def test_not_set_up_replies(self):
+        self.assertIn('set up', z.handle('edit mode'))
+        self.assertIn("aren't set up", z.handle('new task 55 foo bar'))
+        self.assertIn("aren't set up", z.handle('export check'))
+        self.assertEqual(list(self.dl.iterdir()), [])
+        self.assertTrue(z.handle('start my day').startswith('Morning, J. Gmail is up.'))
+
+    def test_editor_only_tools_not_available(self):
+        self.assertIsNone(z.handle('open submagic'))
+        self.assertIsNone(z.handle('open clickup'))
+
+
+class Browsers(Base):
+    def test_safari_scripts(self):
+        self.set_wf({'browser': 'Safari'})
+        scripts = []
+        with mock.patch.object(z, '_osa', side_effect=lambda sc, timeout=8: scripts.append(sc) or '(3) WhatsApp'):
+            self.assertIn('3 unread on WhatsApp', z.handle('any new messages'))
+            z.handle('open gmail')
+        self.assertIn('name of every tab', scripts[0])
+        self.assertNotIn('title', scripts[0])
+        self.assertIn('application "Safari"', scripts[0])
+        self.assertIn('set current tab of w to tab ti of w', scripts[1])
+        self.assertNotIn('active tab index', scripts[1])
+
+    def test_chromium_scripts_and_short_name(self):
+        for b in ('Brave Browser', 'Google Chrome', 'Arc', 'Microsoft Edge'):
+            self.set_wf({'browser': b})
+            sc = z._focus_script(b, 'x.com')
+            self.assertIn('set active tab index of w to ti', sc)
+            self.assertIn(f'application "{b}"', sc)
+            self.assertIn('title of every tab', z._titles_script(b))
+        self.set_wf({'browser': 'Brave Browser'})
+        self.assertIn('open in Brave', z._unread_reply({'whatsapp': None, 'gmail': []}))
+
+    def test_open_url_uses_browser(self):
+        self.set_wf({'browser': 'Arc'})
+        z.handle('open drive')
+        self.assertIn(['open', '-a', 'Arc', 'https://drive.google.com'], self.calls)
+
+    def test_default_browser_parse(self):
+        plist = '(\n {\n LSHandlerContentType = "public.html";\n },\n {\n LSHandlerRoleAll = "com.google.chrome";\n LSHandlerURLScheme = https;\n }\n)'
+        for out, want in ((plist, 'Google Chrome'), ('', 'Safari'), (plist.replace('com.google.chrome', 'com.unknown.app'), 'Safari')):
+            REAL_DEFAULT.cache_clear()
+            with mock.patch.object(z, '_run', return_value=mock.Mock(stdout=out)):
+                self.assertEqual(REAL_DEFAULT(), want)
+        REAL_DEFAULT.cache_clear()
+
+
+class Robust(Base):
+    def test_bad_json_and_unknown_keys(self):
+        for bad in ('{not json', '[]', '"x"', '{"tools": 5, "startDay": "no", "tasks": 7, "browser": 3}',
+                    '{"mystery": {"a": 1}, "tasks": {"folder": ""}}'):
+            self.set_wf(bad)
+            w = z._workflow()
+            self.assertEqual(w['browser'], 'Google Chrome', bad)
+            self.assertIsNone(w['tasks'], bad)
+            self.assertIn('gmail', w['tools'])
+            self.assertIsInstance(z.handle('start my day'), str)
+
+    def test_unknown_keys_ignored_known_kept(self):
+        self.set_wf({'mystery': 1, 'browser': 'Arc', 'tools': {'x': ['X', 'https://x.test'], 'bad': 'no'}})
+        w = z._workflow()
+        self.assertEqual(w['browser'], 'Arc')
+        self.assertEqual(w['tools'], {'x': ['X', 'https://x.test']})
+
+    def test_tasks_without_folder_not_set_up(self):
+        self.set_wf({'tasks': {'nameFormat': '{batch}'}})
+        self.assertIn("aren't set up", z.handle('export check'))
+
+    def test_custom_format_and_dupes(self):
+        self.set_wf({'tasks': {'folder': str(self.dl), 'nameFormat': '{batch}-{name}', 'dateFormat': '%Y',
+                               'types': {'reel': 'Reel'}, 'subfolders': ['a/b'], 'exports': {'Out': 'out'}}})
+        self.assertIn('is ready in Downloads', z.handle('new task 12 big day reel'))
+        self.assertTrue((self.dl / '12-BigDay' / 'a' / 'b').is_dir())
+        self.assertIn('already exists', z.handle('new task 12 other'))
+        (self.dl / '12-BigDay' / 'out').mkdir()
+        (self.dl / '12-BigDay' / 'out' / 'v.mp4').write_text('x')
+        self.assertEqual(z.handle('export check'), 'Task 12: 1 in Out.')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,28 @@
+{
+  "_help": "Copy this file to ~/.config/atticus/workflow.json and edit it. browser: app name (Google Chrome, Arc, Microsoft Edge, Brave Browser, Safari); leave out to use your Mac's default browser. tools: what you can say after 'open' -> [spoken label, url]. startDay: sites (tool keys, or [label, url]), apps (Mac app names) and openTaskFolder, for 'start my day'. editMode: apps and openTaskFolder, for 'edit mode'. tasks: folder = where task folders live; nameFormat uses {date} {batch} {name} {type}; dateFormat is a strftime pattern; types = spoken word -> label used in the folder name; defaultType; subfolders = created inside each new task folder; exports = label -> folder (relative to the task folder) counted by 'export check'. Remove any key you don't need; missing keys fall back to simple defaults.",
+  "browser": "Google Chrome",
+  "tools": {
+    "clickup": ["ClickUp", "https://app.clickup.com"],
+    "frame": ["Frame.io", "https://app.frame.io"],
+    "drive": ["Drive", "https://drive.google.com"],
+    "gmail": ["Gmail", "https://mail.google.com"]
+  },
+  "startDay": {
+    "sites": ["gmail", "clickup"],
+    "apps": ["Adobe Premiere Pro 2026"],
+    "openTaskFolder": true
+  },
+  "editMode": {
+    "apps": ["Adobe Premiere Pro 2026"],
+    "openTaskFolder": true
+  },
+  "tasks": {
+    "folder": "~/Movies/Projects",
+    "nameFormat": "{date}_{batch}_{name}_{type}",
+    "dateFormat": "%d%b%y",
+    "types": {"video": "Video", "reel": "Reel"},
+    "defaultType": "Video",
+    "subfolders": ["01_Footage", "02_Audio", "03_Project", "04_Exports"],
+    "exports": {"Exports": "04_Exports"}
+  }
+}
