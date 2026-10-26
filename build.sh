@@ -26,7 +26,7 @@ APP=~/Applications/Atticus.app   # in Applications so System Settings can list i
 BUNDLE_ID=com.atticus.app; SOURCE=$(pwd)
 if [ -n "$PACKAGE" ]; then APP="$PACKAGE/Wavelength.app"; BUNDLE_ID=com.wavelength.app; SOURCE=""; rm -rf "$APP"; fi   # a package has no source folder to update from
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
-cp atticus.py zuka_commands.py "$APP/Contents/Resources/"
+cp atticus.py zuka_commands.py zuka_more.py "$APP/Contents/Resources/"
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
 cp ui/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<P
