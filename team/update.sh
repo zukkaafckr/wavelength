@@ -14,24 +14,30 @@ if [ $AUTO = 1 ]; then   # never rebuild (it restarts the app) while someone is 
   idle=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}')
   [ "${idle:-0}" -ge 600 ] || exit 0
 fi
+cp team/managed.json "$HOME/.config/atticus/managed.json" 2>/dev/null || true   # the app reads its "locked" list at launch
 # names now live in settings (older installs kept them only in team/.personalized): quit the app first, or it rewrites the file
 M_NAME=$(sed -n 's/^name=\(.*\) call=.*/\1/p' team/.personalized 2>/dev/null); M_CALL=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' team/.personalized 2>/dev/null)
-if [ -n "$M_NAME" ] && [ -n "$M_CALL" ] && ! NAME="$M_NAME" CALL="$M_CALL" python3 -c 'import json,os,sys; s=json.load(open(os.path.expanduser("~/.config/atticus/settings.json"))); sys.exit(0 if (s.get("assistantName"),s.get("userCallName"))==(os.environ["NAME"],os.environ["CALL"]) else 1)' 2>/dev/null; then
+if [ -n "$M_NAME" ] && [ -n "$M_CALL" ] && ! NAME="$M_NAME" CALL="$M_CALL" python3 -c 'import json,os,sys; s=json.load(open(os.path.expanduser("~/.config/atticus/settings.json"))); m=json.load(open("team/managed.json"))["values"]; sys.exit(0 if (s.get("assistantName"),s.get("userCallName"))==(os.environ["NAME"],os.environ["CALL"]) and all(s.get(k)==v for k,v in m.items()) else 1)' 2>/dev/null; then
 [ -n "$WAVELENGTH_TEST" ] || osascript -e 'quit app id "com.atticus.app"' 2>/dev/null || true; for _ in $(seq 1 20); do pgrep -x Atticus >/dev/null || break; sleep 0.5; done
 NAME="$M_NAME" CALL="$M_CALL" python3 - <<'PY'
 import json, os
+MANAGED = json.load(open("team/managed.json"))["values"]   # settings the owner manages for the whole team
 p = os.path.expanduser("~/.config/atticus/settings.json")
 try: s = json.load(open(p))
 except (OSError, ValueError): s = {}
-if s.get("assistantName") != os.environ["NAME"] or s.get("userCallName") != os.environ["CALL"]:
-    s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"]); os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump(s, open(p, "w"), indent=1)
+s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"], **MANAGED); os.makedirs(os.path.dirname(p), exist_ok=True)
+json.dump(s, open(p, "w"), indent=1)
 PY
-[ -n "$WAVELENGTH_TEST" ] || open -g -a "$HOME/Applications/Atticus.app" 2>/dev/null || true; say_ "Set your assistant's name and call-name in settings."
+[ -n "$WAVELENGTH_TEST" ] || open -g -a "$HOME/Applications/Atticus.app" 2>/dev/null || true; say_ "Restored your name and the team's managed settings."
 fi
 
-git fetch -q origin main 2>>"$LOG" || { say_ "Couldn't reach GitHub (offline or not signed in: run gh auth login, then gh auth setup-git)."; exit 1; }
-[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && { say_ "Already up to date."; exit 0; }
+DIRTY=$(git status --porcelain --untracked-files=no)   # the app's code is the team's: local edits are put back (and rebuilt), online or not
+if [ -n "$DIRTY" ]; then say_ "Undoing local changes to the app's code: $(echo $DIRTY | tr '\n' ' ')"; git reset -q --hard HEAD; fi
+git fetch -q origin main 2>>"$LOG" || {
+  say_ "Couldn't reach GitHub (offline or not signed in: run gh auth login, then gh auth setup-git)."
+  if [ -n "$DIRTY" ] && [ -z "$WAVELENGTH_TEST" ]; then ./build.sh >>"$LOG" 2>&1 && say_ "Rebuilt the team version."; fi
+  exit 1; }
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && [ -z "$DIRTY" ] && { say_ "Already up to date."; exit 0; }
 
 MARK=team/.personalized
 NAME=$(sed -n 's/^name=\(.*\) call=.*/\1/p' "$MARK" 2>/dev/null); CALL=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' "$MARK" 2>/dev/null)

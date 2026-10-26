@@ -217,7 +217,14 @@ enum Prefs {
         }
         return values   // persisted with the next preference write; legacy keys remain readable
     }()
+    // Team installs: settings the owner manages (managed.json "locked", written by the team installer/updater) can't be changed here.
+    static let locked: Set<String> = {
+        let file = (path as NSString).deletingLastPathComponent + "/managed.json"
+        guard let data = FileManager.default.contents(atPath: file), let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return Set(j["locked"] as? [String] ?? [])
+    }()
     @discardableResult static func set(_ k: String, _ v: Any) -> Bool {   // false: not on disk, so the old value stays too
+        if locked.contains(k) { return false }
         let old = d[k]; d[k] = v
         do {
             try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)

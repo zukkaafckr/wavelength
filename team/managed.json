@@ -1,0 +1,29 @@
+{
+ "_help": "Settings the owner manages for every teammate. The updater restores them every hour and the app won't let them change.",
+ "values": {
+  "usageCheck": true,
+  "safe": true,
+  "quietAgents": true,
+  "autoUpdate": false,
+  "stats": false,
+  "improve": false,
+  "support": false,
+  "client": "claude",
+  "routing": "cheapest",
+  "model": "haiku"
+ },
+ "locked": [
+  "usageCheck",
+  "safe",
+  "quietAgents",
+  "autoUpdate",
+  "stats",
+  "improve",
+  "support",
+  "client",
+  "routing",
+  "model",
+  "agentModel",
+  "fixSetup"
+ ]
+}

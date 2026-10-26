@@ -83,6 +83,7 @@ s.update(assistantName=os.environ["NAME"], userCallName=os.environ["CALL"], usag
 with open(p, "w") as f: json.dump(s, f, indent=2)
 os.chmod(p, 0o600)
 PY
+cp "$TEAM/managed.json" "$HOME/.config/atticus/managed.json"   # the settings the owner manages: the app keeps them locked
 note "Wrote settings: ask before using your Claude plan, no telemetry, no background updates, press-to-talk, cheapest routing, speak and greet on"
 if [ -n "$PICK" ]; then [ -n "$DRY" ] || printf '{"pick": "%s"}\n' "$PICK" > "$HOME/.config/atticus/voice.json"; note "Voice: $PICK (say \"voice options\" any time to hear the others)"; fi
 fi

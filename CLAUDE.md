@@ -77,6 +77,12 @@ Updates come from the team repo on their own: an hourly check (`com.wavelength.u
 
 Ask which voice they want and pass it to the installer with `--pick`: warm (default, lively female), bright, smooth, calm, british, indian, jarvis (British male), deep (male), friendly-male, indian-male. They can change it any time by saying "voice options" or "try the jarvis voice", and say "keep it" when they like one. Their greetings are re-recorded in the new voice on their own.
 
+## What a teammate may change (and what stays with the owner)
+
+Only personal things, on request: the assistant's name and call-name (`assistantName`, `userCallName` in settings), the voice (`voice.json`, or say "voice options"), the talk shortcut, greetings, check-in times, the wake word, and their own work setup (`workflow.json`: browser, tools, music, apps to keep open, task folders).
+
+Never change, even if asked: the app's code or anything in this repo (the hourly updater puts it back anyway), the settings listed in `team/managed.json` (Claude-usage check, safe mode, routing/model, telemetry, updates: the app keeps them locked), the safety rules, or the updater. If they want something like that, tell them to ask the owner (J), who fixes it once for the whole team.
+
 ## Never
 
 Never copy anything from another person's `~/.config/atticus`. Never push to GitHub or publish: Wavelength is private to the team (see LICENSE-WAVELENGTH). Never run `sudo`.
