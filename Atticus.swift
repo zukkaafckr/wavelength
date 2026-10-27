@@ -4239,11 +4239,10 @@ final class App: NSObject, WKScriptMessageHandler {
         busy = false; dictating = false; dictateSelection = nil; lastDictation = value
         let paste = pasteHotkeyRegistered ? " Press ⌃⌘V to paste it." : ""
         cue("soundStop")
-        // Never the clipboard: the user's own copy stays. History keeps the words; with it off (or unsaved) they stay on screen.
-        guard Prefs.bool("dictateHistory") && saveDictation(value, appName: dictationAppName) else {
-            js("dictated", ["text": failed + (paste.isEmpty ? " Your words are still here." : paste), "ok": false, "words": value]); return
-        }
-        js("dictated", ["text": failed + (paste.isEmpty ? " Saved to History." : paste), "ok": false, "history": true]); hide(after: 6)
+        // Never the clipboard: the user's own copy stays. Zuka: the words always stay on screen with Copy (and go to History), so nothing said is ever lost.
+        let saved = Prefs.bool("dictateHistory") && saveDictation(value, appName: dictationAppName)
+        js("dictated", ["text": failed + " Here’s what you said." + paste, "ok": false, "words": value, "history": saved, "show": true])
+        if saved { hide(after: 30) }   // unsaved words stay until closed
     }
 
     func insertDictation(_ heard: String, tidied: Bool = false) {

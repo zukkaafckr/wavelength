@@ -312,7 +312,7 @@ print("dictation target safety ok")
         self.assertEqual(apply.count('.post(tap: .cghidEventTap)'), 1)
         self.assertEqual(apply.count('postToPid'), 1)   # one send, never both: per-process only while Atticus holds the keyboard
         self.assertIn('if NSApp.keyWindow == nil { e.post(tap: .cghidEventTap) } else { e.postToPid(', apply)
-        self.assertIn('Saved to History', insert)
+        self.assertIn('Here’s what you said.', insert)
         self.assertNotIn('NSPasteboard', insert)   # dictation never leaves its words on the clipboard
         # Oct 21, 2026: a paste into an Electron chat box landed but its field read back unchanged, so Atticus said "Couldn't insert".
         swift = r'''import Foundation
@@ -519,22 +519,22 @@ precondition(done.log == ["finishing ", "dictated  true"] && done.hides == [0.8]
 let clean = Harness(); clean.dictateCleanup = true; clean.release()
 precondition(clean.log == ["finishing Cleaning up…"], "Clean up mode did not label its wait")
 let fallback = Harness(); fallback.release(); fallback.insertDictation("keep me safe")
-precondition(fallback.log == ["finishing ", "dictated No text field. Press ⌃⌘V to paste it. false"] && saved == ["keep me safe"] && fallback.hides == [6], "fallback: \(fallback.log)")
+precondition(fallback.log == ["finishing ", "dictated No text field. Here’s what you said. Press ⌃⌘V to paste it. false"] && saved == ["keep me safe"] && fallback.hides == [30], "fallback: \(fallback.log)")
 precondition(fallback.lastDictation == "keep me safe", "⌃⌘V would not paste the words that failed to insert")
 let moved = Harness(); moved.dictateSelection = Target(user); moved.release(); NSWorkspace.shared.frontmostApplication = AppRef(); moved.insertDictation("switched away")
 NSWorkspace.shared.frontmostApplication = user
-precondition(moved.log == ["finishing ", "dictated Couldn’t insert. Press ⌃⌘V to paste it. false"], "a failed insert into a field said nothing was selected: \(moved.log)")
+precondition(moved.log == ["finishing ", "dictated Couldn’t insert. Here’s what you said. Press ⌃⌘V to paste it. false"], "a failed insert into a field said nothing was selected: \(moved.log)")
 saves = false
 let fail = Harness(); fail.release(); fail.insertDictation("keep me")
-precondition(fail.log == ["finishing ", "dictated No text field. Press ⌃⌘V to paste it. false"] && fail.hides.isEmpty, "unsaved words faded away: \(fail.log)")
+precondition(fail.log == ["finishing ", "dictated No text field. Here’s what you said. Press ⌃⌘V to paste it. false"] && fail.hides.isEmpty, "unsaved words faded away: \(fail.log)")
 saves = true; Prefs.on = []; saved = []
 let off = Harness(); off.release(); off.insertDictation("history off")
-precondition(off.log == ["finishing ", "dictated No text field. Press ⌃⌘V to paste it. false"] && off.hides.isEmpty && saved.isEmpty, "History off: \(off.log)")
-precondition(off.words == ["history off"] && fallback.words.isEmpty, "unsaved words cannot be copied from the pill")
+precondition(off.log == ["finishing ", "dictated No text field. Here’s what you said. Press ⌃⌘V to paste it. false"] && off.hides.isEmpty && saved.isEmpty, "History off: \(off.log)")
+precondition(off.words == ["history off"] && fallback.words == ["keep me safe"], "the words can always be copied from the pill")
 Prefs.on = ["dictateHistory"]; pasteHotkeyRegistered = false   // another app (Willow Voice) holds ⌃⌘V
 let taken = Harness(); taken.dictateSelection = Target(user); NSWorkspace.shared.frontmostApplication = AppRef(); taken.insertDictation("raw words")
 NSWorkspace.shared.frontmostApplication = user
-precondition(taken.log == ["dictated Couldn’t insert. Saved to History. false"] && saved == ["raw words"], "a shortcut Atticus does not own was offered: \(taken.log)")
+precondition(taken.log == ["dictated Couldn’t insert. Here’s what you said. false"] && saved == ["raw words"], "a shortcut Atticus does not own was offered: \(taken.log)")
 pasteHotkeyRegistered = true
 let late = Target(user); late.deferred = true
 let cancelled = Harness(); cancelled.dictateSelection = late; cancelled.release(); cancelled.insertDictation("never"); cancelled.cancel(); late.pending?()
