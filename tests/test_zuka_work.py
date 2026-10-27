@@ -330,7 +330,7 @@ class WhatsApp(Base):
     def test_latest(self):
         with mock.patch.object(z, '_tab_exec', return_value=json.dumps(WA)):
             out = z.handle('who messaged me on whatsapp')
-            self.assertEqual(out, "Latest on WhatsApp, 1 unread in all: Family, 'Sleeping?', at 11:42; Team Daily, 'EOD report for today with many many…', yesterday.")
+            self.assertEqual(out, "1 unread chat on WhatsApp. Family: 'Sleeping?', at 11:42.")
             self.assertEqual(z.handle('latest whatsapp messages'), out)
             self.assertNotIn('click', z._WA_JS.lower())
 

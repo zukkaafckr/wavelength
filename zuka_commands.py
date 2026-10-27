@@ -529,6 +529,27 @@ def _open_tool(key):
     return f"{label}'s up." if ok else f"I couldn't open {label}, {CALL()}."
 
 
+WEB = {'youtube': ('YouTube', 'https://www.youtube.com'), 'you tube': ('YouTube', 'https://www.youtube.com'), 'youtube music': ('YouTube Music', 'https://music.youtube.com'),
+       'yt music': ('YouTube Music', 'https://music.youtube.com'), 'google drive': ('Google Drive', 'https://drive.google.com'), 'google docs': ('Google Docs', 'https://docs.google.com'),
+       'google sheets': ('Google Sheets', 'https://sheets.google.com'), 'google slides': ('Google Slides', 'https://slides.google.com'), 'google meet': ('Google Meet', 'https://meet.google.com'),
+       'google': ('Google', 'https://www.google.com'), 'instagram': ('Instagram', 'https://www.instagram.com'), 'insta': ('Instagram', 'https://www.instagram.com'),
+       'facebook': ('Facebook', 'https://www.facebook.com'), 'linkedin': ('LinkedIn', 'https://www.linkedin.com'), 'twitter': ('X', 'https://x.com'),
+       'netflix': ('Netflix', 'https://www.netflix.com'), 'github': ('GitHub', 'https://github.com'), 'claude': ('Claude', 'https://claude.ai'),
+       'figma': ('Figma', 'https://www.figma.com'), 'canva': ('Canva', 'https://www.canva.com'), 'notion': ('Notion', 'https://www.notion.so'),
+       'amazon': ('Amazon', 'https://www.amazon.in'), 'flipkart': ('Flipkart', 'https://www.flipkart.com'), 'higgsfield': ('Higgsfield', 'https://higgsfield.ai')}
+_OPEN_WEB = re.compile(r"^(?:open|launch|start|go to|pull up|bring up|show|take me to)(?: up)?(?: me)? (?:my |the )?(?P<w>" + '|'.join(re.escape(k) for k in sorted(WEB, key=len, reverse=True)) + r")(?: tab| site| page| website| web| app| dot com)?$")
+
+
+def _open_web(key):
+    """"open YouTube" / "open Google Drive": an installed app of that name if there is one, else the site in the workflow browser (focus the tab if it's open)."""
+    label, url = WEB[key]
+    app = _installed_app(key, label)
+    if app:
+        return f"{label}'s up." if _open_installed(app) else f"I couldn't open {label}, {CALL()}."
+    host = re.sub(r'^https?://', '', url).split('/')[0]
+    return f"{label}'s up." if _focus_or_open(host, url) else f"I couldn't open {label}, {CALL()}."
+
+
 def _unread():
     try:
         info = _parse_titles(_browser_titles())
@@ -541,6 +562,7 @@ def _unread():
         except Exception:
             pass
         offer = [k for k, v in (('whatsapp', info['whatsapp']), ('gmail', sum(n for _, n in info['gmail']))) if v]
+        offer += [k for k in ('slack', 'discord') if re.search(r'\d+ on ' + k + r'\b', reply, re.I)]   # their badge counts are in the reply: reading them is on offer too
         if offer:
             _set_offer(offer)
             reply += OFFER_TEXT
@@ -663,7 +685,7 @@ KEEP_IDS = {'com.atticus.app', 'com.apple.finder'}   # the assistant itself, and
 SHUTDOWN_FILE = os.path.expanduser('~/.config/atticus/shutdown-offer.json')
 _CLOSE_ALL = re.compile(r"^(?:please )?(?:close|quit|shut) (?:all|everything|every app|all (?:of )?(?:the |my )?(?:running |open |opened )?(?:apps|applications|programs|windows))"
                         r"(?: (?:that are |which are )?(?:running|open|opened))?(?: (?:in the background|behind|on the mac|on my mac))?$|^close everything down$")
-_DONE_DAY = re.compile(r"\bdone for (?:the day|today)\b|\bcall it a day\b|\bwrap (?:it )?up for (?:the day|today)\b|\bend of (?:the )?day\b|\blog(?:ging)? off for (?:the day|today)\b")
+_DONE_DAY = re.compile(r"\bdone for (?:the day|today)\b|\bcall it a day\b|\bwrap (?:it )?up for (?:the day|today)\b|\bend of (?:the )?day\b|\bthat(?: is|s) (?:all|it) for (?:the day|today)\b|\blog(?:ging)? off for (?:the day|today)\b")
 _SHUTDOWN = re.compile(r"^(?:please )?(?:shut ?down|turn off|power off|power down)(?: (?:the|my) (?:mac|computer|laptop|system))?(?: now)?$")
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|yes please|yes shut (?:it )?down|shut (?:it )?down|please do)$")
 
@@ -1005,7 +1027,7 @@ def _math(raw):
 
 
 # ---- time, date, day
-_TIME_Q = re.compile(r"^(?:what time is it|whats the time|what is the time|what time is it now|whats the time now|current time|the time|time now|tell me the time|what time is it right now|got the time)(?: please)?$")
+_TIME_Q = re.compile(r"^(?:what time is it|whats the time|what is the time|what time is it now|whats the time now|what is the time now|what is the time right now|whats the time right now|what is the time currently|current time|the time|time now|tell me the time|what time is it right now|got the time)(?: please)?$")
 _DATE_Q = re.compile(r"^(?:whats|what is) (?:the )?(?:date|todays date|today s date)(?: today| now)?$|^(?:whats|what is) todays? date$|^what date is it(?: today)?$|^todays date$|^what is today s date$|^whats today s date$|^today s date$")
 _DAY_Q = re.compile(r"^(?:what|which) day is it(?: today)?$|^whats the day(?: today)?$|^what day is today$|^what day is it today$")
 
@@ -1032,7 +1054,7 @@ _TMRW = re.compile(r"^(?:(?:hows|whats|what is|how is|tell me|give me|check) )?(
                    r"^(?:(?:whats|what is|how is|hows) )?tomorrow s? ?(?:weather|forecast)(?: (?:in|for|at) (?P<city2>[a-z][a-z ]*?))?$|^tomorrow(?: s)? weather$")
 _TMRW_RAIN = re.compile(r"^(?:(?:is it|will it|is it going to|is it gonna|going to|do you think it will|do you think it ll) )(?:rain|raining|be raining|be rainy|be wet)(?: tomorrow| tomorrow morning| tomorrow evening)$|^(?:will|is) tomorrow (?:be )?(?:rainy|wet|raining)$|^(?:will it|is it going to) rain tomorrow$")
 _RAIN = re.compile(r"^(?:is it going to|is it gonna|will it|is it|going to|is it gonna) rain(?:ing)?(?: today| right now| now| later| outside)?$")
-_TEMP = re.compile(r"^(?:whats )?(?:the )?temperature(?: outside| out there| right now| today| now)?$|^how (?:hot|cold|warm) is it(?: outside| right now| today)?$")
+_TEMP = re.compile(r"^(?:whats |what is )?(?:the )?temperature(?: outside| out there| right now| today| now)?$|^how (?:hot|cold|warm) is it(?: outside| right now| today)?$")
 _WX = re.compile(r"^(?P<c>.+?)\s+(?P<t>[+-]?\d+)\s*°C\s+feels\s+(?P<f>[+-]?\d+)\s*°C,\s*(?P<p>[\d.]+)\s*mm rain", re.I)
 
 
@@ -1213,8 +1235,11 @@ def _currency(raw):
 
 
 # ---- volume
-_VOL_UP = re.compile(r"^(?:volume up|turn (?:it |the volume |the sound )?up|turn up the volume|louder|make it louder|a bit louder|increase (?:the )?volume|raise (?:the )?volume|volume higher|sound up)$")
-_VOL_DOWN = re.compile(r"^(?:volume down|turn (?:it |the volume |the sound )?down|turn down the volume|quieter|make it quieter|a bit quieter|softer|lower (?:the )?volume|decrease (?:the )?volume|reduce (?:the )?volume|volume lower|sound down)$")
+_BIT = r"(?:(?:a )?(?:bit|little|lot|notch|touch)|slightly|some|more|abit)"
+_VOL_UP = re.compile(r"^(?:(?:turn|make|get|bump|crank|put|pump|take|bring|set)(?: it| the (?:volume|sound|audio|music)| volume| sound| audio)?(?: " + _BIT + r")? ?(?:up|louder|higher)|"
+                     r"turn up(?: the)?(?: volume| sound| audio| music)?|(?:increase|raise|boost|up)(?: the)?(?: volume| sound| audio)?|volume (?:" + _BIT + r" )?(?:up|higher|louder)|louder|" + _BIT + r" louder|sound up|too (?:quiet|low|soft|silent))(?: " + _BIT + r")?$")
+_VOL_DOWN = re.compile(r"^(?:(?:turn|make|get|bring|put|take|set)(?: it| the (?:volume|sound|audio|music)| volume| sound| audio)?(?: " + _BIT + r")? ?(?:down|quieter|lower|softer)|"
+                       r"turn down(?: the)?(?: volume| sound| audio| music)?|(?:decrease|reduce|lower|drop)(?: the)?(?: volume| sound| audio)?|volume (?:" + _BIT + r" )?(?:down|lower|quieter)|quieter|softer|" + _BIT + r" (?:quieter|softer|lower)|sound down|too (?:loud|noisy|high))(?: " + _BIT + r")?$")
 _VOL_MUTE = re.compile(r"^(?:mute|mute (?:it|the sound|the volume|the mac|sound))$")
 _VOL_UNMUTE = re.compile(r"^(?:unmute|unmute (?:it|the sound|the volume|the mac|sound))$")
 _VOL_MAX = re.compile(r"^(?:max(?:imum)? volume|full volume|volume (?:to )?(?:max|full|maximum)|turn it up (?:all the way|to max))$")
@@ -1274,7 +1299,7 @@ def _human_dur(secs):
 
 
 def _timer(raw):
-    s = _clean(raw)
+    s = re.sub(r"(?: (?:for me|please|once|na|yaar))+$", '', _clean(raw))
     m = _TIMER.match(s)
     if not m:
         return None
@@ -1294,6 +1319,7 @@ def _timer(raw):
 _REM_IN = re.compile(r"^remind me (?:to )?(?P<task>.+?) in " + _DUR + r"$")
 _REM_AT = re.compile(r"^remind me (?:to )?(?P<task>.+?)(?P<day> tomorrow| today| tonight)?(?: at (?P<h>\d{1,2})(?:[: ]?(?P<mi>\d{2}))? ?(?P<ap>am|pm|a m|p m)?)(?P<day2> tomorrow| today| tonight)?$")
 _REM_TOMORROW = re.compile(r"^remind me (?:to )?(?P<task>.+?) tomorrow$")
+_REM_TONIGHT = re.compile(r"^remind me (?:to )?(?P<task>.+?) (?:tonight|this evening)$")   # no clock time: 9 pm
 
 
 def _as_str(s):
@@ -1303,7 +1329,7 @@ def _as_str(s):
 REMINDERS = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'reminders.json')   # the reminders Zuka made (id, task, when): only these can be cancelled by voice
 _CANCEL_REM = re.compile(r"^(?:cancel|delete|remove|clear|forget|scrap|drop)(?: (?:all|every|my|the|that|this|last|latest|previous|recent|newest|one|a|reminder))*? ?reminders?(?: i just (?:made|set|gave))?$")
 PENDING = os.path.join(os.environ.get('ATTICUS_DIR') or os.path.expanduser('~/.config/atticus'), 'pending.json')   # a half-given reminder waiting for its missing part (90 s)
-_WHEN = r"(?:tomorrow|today|tonight|(?:tomorrow |today |tonight )?at \d{1,2}(?:[: ]?\d{2})? ?(?:am|pm|a m|p m)?(?: tomorrow| today| tonight)?|in (?:\d+|an?|half an?|a couple of) [a-z ]+?)"
+_WHEN = r"(?:(?:tomorrow |today |tonight )?at \d{1,2}(?:[: ]?\d{2})? ?(?:am|pm|a m|p m)?(?: tomorrow| today| tonight)?|tomorrow|today|tonight|in (?:\d+|an?|half an?|a couple of) [a-z ]+?)"
 
 
 def _pending(new=None, clear=False):
@@ -1376,6 +1402,25 @@ def _remind_words(low):
     return low
 
 
+_REM_NOUN = re.compile(r"(?i)^(?:(?:set|add|create|make|put|schedule|save|give me|i need)(?: me)?(?: up)?(?: an?| another| one| the)?(?: new| quick)? |(?:an? )?)reminder(?: (?:for|to|about|that|on|at))? ?(?P<r>.*)$")
+
+
+def _reminder_noun(raw):
+    """"set a reminder for 5 pm" / "set a reminder to call Alex tomorrow" / "reminder to stretch at 6" -> "remind me ..." (None if it isn't that)."""
+    m = _REM_NOUN.match(re.sub(r"\s+", ' ', (raw or '').strip().rstrip('.!?')))
+    if not m or 'remind me' in raw.lower():
+        return None
+    r = m.group('r').strip()
+    if not r:
+        return 'remind me'
+    low = r.lower()
+    if re.match(r"\d+(?:\.\d+)? ?(?:min|minute|minutes|hour|hours|hr|hrs|sec|seconds)\b|(?:an?|half an?) (?:hour|minute)", low):
+        return 'remind me in ' + r
+    if re.match(r"\d{1,2}(?:[: ]\d{2})? ?(?:am|pm|a m|p m)?\b", low) and not re.match(r"\d+ (?:things|items)", low):
+        return 'remind me at ' + r
+    return 'remind me ' + ('to ' + r if not re.match(r"(?:to|about|tomorrow|today|tonight|in|at|that)\b", low) else r)
+
+
 def _remind(raw):
     low = re.sub(r"\s+", ' ', raw.lower().replace('’', "'")).strip().rstrip('.!?')
     low = _remind_words(low)
@@ -1401,9 +1446,12 @@ def _remind(raw):
         fixed = _words_to_digits(low)
         m = _REM_AT.match(fixed)
         mt = None if m else _REM_TOMORROW.match(low)
-        if not m and not mt:
+        mn = None if m or mt else _REM_TONIGHT.match(low)
+        if not m and not mt and not mn:
             return None
-        if mt:
+        if mn:
+            task, h, mi, ap, tomorrow = mn.group('task'), 9, 0, 'pm', False
+        elif mt:
             task, h, mi, ap, tomorrow = mt.group('task'), 9, 0, 'am', True
         else:
             idx = low.rfind(' at ')
@@ -1423,7 +1471,7 @@ def _remind(raw):
         elif ap == 'am' and h == 12:
             h = 0
         base = now.replace(second=0, microsecond=0)
-        if mt or ap or h > 12 or h == 0:
+        if mt or mn or ap or h > 12 or h == 0:
             when = base.replace(hour=h, minute=mi) + timedelta(days=1 if tomorrow else 0)
             if not tomorrow and when <= now:
                 when += timedelta(days=1)
@@ -1469,10 +1517,10 @@ def _screenshot(area):
 
 
 # ---- music
-_MUSIC = [(re.compile(r"^(?:pause|stop|hold)(?: the| this)? (?:music|song|track|playing|playback)$"), 'pause', 'Paused, {call}.'),
-          (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this)? (?:music|song|track)$|^(?:resume|unpause)$"), 'play', 'Playing, {call}.'),
-          (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track)$|^skip this$"), 'next track', 'Next one, {call}.'),
-          (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track)$|^play the previous (?:song|track)$"), 'previous track', 'Going back, {call}.')]
+_MUSIC = [(re.compile(r"^(?:pause|stop|hold)(?: the| this| my)? (?:music|song|track|playing|playback)$|^(?:pause|pause it|stop it|hold it|pause this|pause that)$"), 'pause', 'Paused, {call}.'),
+          (re.compile(r"^(?:play|resume|continue|unpause)(?: the| this| my)? (?:music|song|track)$|^(?:resume|unpause|play|resume it|continue)$"), 'play', 'Playing, {call}.'),
+          (re.compile(r"^(?:next|skip)(?: the| this)? (?:song|track)(?: please)?$|^skip this$|^(?:next|skip)(?: it| one| this one| the song)?$|^play (?:the )?next(?: song| one| track)?$"), 'next track', 'Next one, {call}.'),
+          (re.compile(r"^(?:previous|last|go back a|back a)(?: the)? (?:song|track)$|^play the previous (?:song|track)$|^(?:go (?:back )?to )?(?:the )?(?:previous|last) (?:song|track|one)$|^previous(?: one)?$|^play (?:the )?previous(?: one)?$"), 'previous track', 'Going back, {call}.')]
 
 
 def _music(t):
@@ -1567,6 +1615,9 @@ def _basics(t, raw):
             return r
         if _CANCEL_REM.match(t):
             return _cancel_remind(t)
+        rw = _reminder_noun(raw)
+        if rw:
+            return _remind(rw)
         if 'remind me' in t:
             return _remind(raw)
         if _SHOT_AREA.match(t):
@@ -1640,7 +1691,7 @@ def _take_offer():
     except (OSError, ValueError):
         return None
     if isinstance(d, dict) and time.time() - d.get('at', 0) <= OFFER_WINDOW and d.get('sites'):
-        return [s for s in d['sites'] if s in INBOX]
+        return [s for s in d['sites'] if s in INBOX or s in ('slack', 'discord')]
     return None
 
 
@@ -1701,17 +1752,17 @@ def _wa_when(tm):
 
 
 def _fmt_whatsapp(items):
-    """Up to 5 chats (the list is newest first) whose last message is theirs: name, ~40-char preview, time as shown."""
+    """Up to 5 chats whose last message is theirs, unread ones first (the list is newest first): "Athar: 'are you coming?', 7:40."."""
     theirs = [i for i in items if not i.get('me')]
     un = [i for i in theirs if i.get('unread')]
     if not theirs:
         return f"Nothing new on WhatsApp, {CALL()}."
     bits = []
-    for i in theirs[:5]:
+    for i in (un or theirs)[:5]:
         w = _wa_when(i.get('time'))
-        bits.append(f"{_wa_clean(i['name']) or 'Someone'}, '{_snip(_wa_clean(i.get('snippet')))}'" + (f", {w}" if w else ''))
-    head = f"Latest on WhatsApp, {len(un)} unread in all" if un else "Nothing unread on WhatsApp. Latest chats"
-    return f"{head}: " + '; '.join(bits) + '.'
+        bits.append(f"{_wa_clean(i['name']) or 'Someone'}: '{_snip(_wa_clean(i.get('snippet')), 50) or 'a message'}'" + (f", {w}" if w else ''))
+    head = f"{len(un)} unread chat{'s' if len(un) != 1 else ''} on WhatsApp" + (f", newest {len(bits)}" if len(un) > len(bits) else '') if un else "Nothing unread on WhatsApp. Latest chats"
+    return f"{head}. " + '. '.join(bits) + '.'
 
 
 def _fmt_gmail(items):
@@ -1816,26 +1867,34 @@ def _inbox_phrase(t):
         sites = _take_offer()
         if not sites:
             return None   # a bare yes with no fresh offer may answer an approval card
-        return ' '.join(_read_inbox(k) for k in sites)
+        import zuka_work
+        return ' '.join(_read_inbox(k, True if k == 'whatsapp' else None) if k in INBOX else zuka_work._chat(k) for k in sites)
     return None
 
 
 # ---------------------------------------------------------------- entry
-def handle(t):
-    said = _handle(t)
+def handle(t, raw=None):
+    said = _handle(t, raw)
     if said is None:   # the wider set of free Mac commands (zuka_more.py), last, so the commands above win
         try:
             import zuka_work, zuka_more
-            said = zuka_work.handle(_norm(t), t if isinstance(t, str) else '') or zuka_more.handle(_norm(t), t if isinstance(t, str) else '')
+            r0 = raw if isinstance(raw, str) and raw.strip() else (t if isinstance(t, str) else '')   # what was really said (case kept) when the caller has it
+            said = zuka_work.handle(_norm(t), r0) or zuka_more.handle(_norm(t), r0)
         except ImportError: pass
         except Exception: said = FAIL.format(call=CALL()) if '{call}' in FAIL else None
     return clean_call(said)
 
 
-def _handle(t):
+def _handle(t, said=None):
     try:
         raw = t if isinstance(t, str) else ''
+        spoken = said if isinstance(said, str) and said.strip() else raw   # exactly as said (case kept): messages are sent in these words
         t = _norm(t)
+        try:   # a yes / no / which-one for a message waiting to be sent comes before every other yes/no handler
+            import zuka_msg
+            r = zuka_msg.confirm(t)
+            if r: return r
+        except Exception: pass
         try:   # learned phrasings -> the phrasing that works; free taste-music requests are played and answered here
             import zuka_learn
             t = zuka_learn.alias(t)
@@ -1866,6 +1925,16 @@ def _handle(t):
         m = _open_re(tools).match(t) if tools else None
         if m:
             return _open_tool(m.group(3))
+        m = _OPEN_WEB.match(t)
+        if m and m.group('w') in WEB:
+            return _open_web(m.group('w'))
+        try:
+            import zuka_msg
+            r = zuka_msg.handle(t, spoken)   # read / send WhatsApp, Slack, Discord (a send always waits for a spoken yes)
+        except ImportError:
+            r = None
+        if r:
+            return r
         try:
             import zuka_work
             r = zuka_work.handle_chat(t)   # Slack / Discord are read from the apps themselves

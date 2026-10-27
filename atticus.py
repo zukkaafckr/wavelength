@@ -1607,7 +1607,12 @@ def play(name, anything=True):
     except (OSError, subprocess.TimeoutExpired):
         played = None
     if not played or played.returncode or played.stdout.strip().lower() != 'playing':
-        return f'Could not start {p[1]} in Spotify. Check Spotify’s Automation permission and try again.'
+        if played and '-1743' in (played.stderr or ''):   # only a real Automation denial is blamed on the permission
+            return f'Could not start {p[1]} in Spotify. Check Spotify’s Automation permission and try again.'
+        if os.environ.get('ATTICUS_LIVE') != '1':   # Spotify can't always start a searched song by name: YouTube Music can, free
+            yt = youtube_play(name, music=True)
+            if yt: return f'Spotify could not start {p[1]}, so: ' + yt
+        return f'Could not start {p[1]} in Spotify.'
     preview_app('Spotify', 'play')
     if not wants_focus(): keep_behind(mine, 'Spotify')   # Spotify raises itself when it starts a track
     return f'Playing {on_spotify(p[1])}.'
@@ -1813,7 +1818,7 @@ def dashes(text):
 def plain(text):
     """Spoken request -> its core words: "Hey Atticus, can you open Spotify please?" -> "open spotify"."""
     t = re.sub(r'[,;!?]|:(?!//)|(?<!\w)\.|\.(?!\w)', '', text.lower().strip(' .!?')).strip()   # keep domain dots; normalize punctuation before spoken prefixes
-    return re.sub(rf'^(?:(?:hey|ok|okay|um+|uh+|hmm+|atticus|zuka|zooka|zuca|{re.escape(assistant_name().lower())}|please|also|and|now|then|(?:can|could|would|will) (?:you|u)) )+|(?:\s+(?:please|for me))+$', '', t)
+    return re.sub(rf'^(?:(?:hey|ok|okay|um+|uh+|hmm+|atticus|zuka|zooka|zuca|{re.escape(assistant_name().lower())}|please|also|and|now|then|(?:can|could|would|will) (?:you|u)|i (?:want|need|would like|wanna) you to|i.?d like you to|go ahead and|yaar) )+|(?:\s+(?:please|for me|once|na|yaar|jara|zara|real quick|quickly))+$', '', t)
 
 
 # Learned shortcuts: an action the AI got right is saved as the exact commands it ran; the same words later replay
@@ -2217,9 +2222,9 @@ def fast(text):
     t = plain(text)
     if os.environ.get('ATTICUS_LIVE') != '1':   # Zuka's free HOA and inbox commands (never mid-sentence: one makes folders)
         import zuka_commands
-        said = zuka_commands.handle(t)
+        said = zuka_commands.handle(t, text)
         if said: return said
-    m = re.fullmatch(r'(?:set |create |make |add )(?:me )?(?:an |my |a )?(?:new )?alarm (?:for|at) (.+)|wake me(?: up)? (?:at|by|for) (.+)', t)
+    m = re.fullmatch(r'(?:(?:set|create|make|add) )?(?:me )?(?:an |my |a )?(?:new )?alarm (?:for|at) (.+)|wake me(?: up)? (?:at|by|for) (.+)', t)
     if m and os.environ.get('ATTICUS_LIVE') != '1':   # Zuka: an alarm is a timed reminder with a sound (Reminders alerts the Mac)
         return fast(f'remind me to wake up at {m[1] or m[2]}')
     m = re.fullmatch(r'(?:get |give me |show me |show )?(?:directions|route|a route) (?:to|for) (.+)|(?:navigate|take me|how do i get) to (.+)|(?:find|show|where is|where s) (?:the )?(?:nearest|closest|nearby) (.+)', t)
@@ -2301,8 +2306,9 @@ def fast(text):
     if m and not DEICTIC.search(m[1]) and not MORE.search(m[1]):   # "play X" alone may mean a video: only the user's playlist here, anything else goes to the AI (which uses --play)
         reply = play(m[1], anything=bool(m[3]))
         if reply and reply.startswith('Playing '): fast.cmds = [f'{PLAY} {shlex.quote(m[1])}']
-        if not reply and not m[3] and os.environ.get('ATTICUS_LIVE') != '1':
-            return youtube_play(m[1])   # Zuka: not one of their playlists: the song on YouTube, free, never Claude
+        if not reply and os.environ.get('ATTICUS_LIVE') != '1':   # Zuka: not one of their playlists / not found on Spotify: the song on YouTube (Music), free, never Claude
+            yt = youtube_play(m[1], music=bool(m[3]))
+            return yt and (f"Couldn't find {m[1]} on Spotify, so: {yt}" if m[3] else yt)
         return reply
     m = re.fullmatch(r'(?:add|put) (.+?) (?:to|in|on) (?:my |the )?(?:spotify )?queue|queue (.+?)(?: next)?', t)
     name = (m[1] or m[2]).removeprefix('the song ').removeprefix('song ') if m else ''
@@ -2395,7 +2401,8 @@ def move_target(t):
     who = re.sub(r'\b(?:snap|move|put|throw|send|make|left|right|full|fullscreen|center|middle|laptop|monitor|to|on|onto|the|my|of|and|side|half|screen)\b', ' ', t)
     who, where, screen = re.sub(r'\s+', ' ', who).strip(), where[0] if where else 'center', screen[0] if screen else 'current'
     if not who:
-        return None
+        if where in ('fullscreen', 'full') and screen == 'current': who = 'it'   # bare "full screen": the window you're in
+        else: return None
     if who in ('it', 'that', 'this', 'window', 'that window', 'this window'):
         app = Path(LAST).read_text().strip() if os.path.exists(LAST) and time.time() - os.path.getmtime(LAST) < 600 else front()[0]
     else:

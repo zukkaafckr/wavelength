@@ -9,6 +9,7 @@ import zuka_chat
 import zuka_commands as z
 import zuka_learn
 import zuka_more
+import zuka_msg
 import zuka_work
 
 FREE = [   # exactly as said (from the request log and conversation), each must be answered on the Mac
@@ -32,6 +33,7 @@ FREE = [   # exactly as said (from the request log and conversation), each must 
     'convert 100 dollars to rupees', 'how much is 50 euros in rupees', '20 pounds to dollars', 'what is the dollar to rupee rate',
     'my screen time', 'screen time today', 'how long was I on Instagram today', 'what is my screen time', 'how long was I on Premiere today',
     'summarize my day', 'what did I do today', 'recap my day', 'how was my day',
+    'Any messages', 'Read me out WhatsApp once.', 'I want you to open WhatsApp', 'Can you message Athar and tell him that I am working', 'play Ake on Spotify',
     'open the takedown tracker', 'open winning ads tracker', 'open the winning ads tracker',
     'update on HOA takedown tracker', 'winning ads tracker update', 'takedown tracker update',
 ]
@@ -42,7 +44,7 @@ class OwnerPhrases(unittest.TestCase):
     def setUp(self):
         d = tempfile.mkdtemp()
         patches = [mock.patch.object(z, 'PENDING', os.path.join(d, 'p.json')), mock.patch.object(z, 'SHUTDOWN_FILE', os.path.join(d, 's.json')),
-                   mock.patch.object(z, 'OFFER_FILE', os.path.join(d, 'o.json')), mock.patch.object(z, 'VOICE_PICK', os.path.join(d, 'v.json')),
+                   mock.patch.object(z, 'OFFER_FILE', os.path.join(d, 'o.json')), mock.patch.object(zuka_msg, 'SEND_FILE', os.path.join(d, 'send.json')), mock.patch.object(z, 'VOICE_PICK', os.path.join(d, 'v.json')),
                    mock.patch.object(z, '_osa', return_value=''), mock.patch.object(z, '_run', return_value=mock.Mock(returncode=0, stdout='80%; charging', stderr='')),
                    mock.patch.object(z, '_get_text', return_value='Clear +20°C'),
                    mock.patch.object(z, '_spawn', return_value=None), mock.patch.object(z, '_running_apps', return_value=[]),

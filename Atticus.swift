@@ -2308,6 +2308,13 @@ final class App: NSObject, WKScriptMessageHandler {
         deliver(said) { [weak self] in
             guard let self, self.askFile == path, !self.engine.isRunning else { return }
             self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }   // a pause ends it, silence closes the mic
+            DispatchQueue.main.asyncAfter(deadline: .now() + 18) { [weak self] in   // Zuka: no answer yet: ask once more, then the wake listener keeps waiting for yes or no
+                guard let self, self.askFile == path, !self.engine.isRunning, self.voice?.isRunning != true else { return }
+                self.deliver("Should I go ahead\(Prefs.callSuffix)? Say yes or no.") { [weak self] in
+                    guard let self, self.askFile == path, !self.engine.isRunning else { return }
+                    self.clickTalk = true; self.start(dictate: false); if !self.engine.isRunning { self.clickTalk = false }
+                }
+            }
         }
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
@@ -8116,7 +8123,7 @@ final class WakeListener {
         if hit == nil, !woke, !app.askFile.isEmpty {   // Zuka: a card is waiting ("should I go ahead?"): a plain yes or no answers it, no name and no mouse needed
             let answer = text.trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?").union(.whitespaces))
             guard answer.lowercased().range(of: #"^(yes|yeah|yep|yup|sure|ok|okay|alright|go ahead|go for it|do it|proceed|allow( it)?|approve|continue|carry on|haan|han|chalo|retry|try again|no|nope|nah|nahi|don'?t|cancel|stop|skip( it)?|not now|never ?mind)\b"#, options: .regularExpression) != nil else { return }
-            rest = answer; settle?.cancel()
+            rest = answer; settle?.cancel(); note("card answer: " + answer)
             let go = DispatchWorkItem { [weak self] in self?.act() }; settle = go
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: go); return
         }

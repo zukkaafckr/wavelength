@@ -93,11 +93,25 @@ class SpotifyTests(unittest.TestCase):
                        subprocess.CompletedProcess([], 0, 'paused', '')):
             with self.subTest(result=result), patch.object(atticus, 'spotify_item', return_value=item), \
                  patch.object(atticus, 'osa', return_value='Editor'), patch.object(atticus.subprocess, 'run', return_value=result), \
+                 patch.object(atticus, 'youtube_play', return_value=None), \
                  patch.object(atticus, 'preview_app') as preview, patch.object(atticus, 'keep_behind') as behind:
                 reply = atticus.play('fixture')
-            self.assertIn('Could not start Fixture song', reply)
+            self.assertEqual(reply, 'Could not start Fixture song in Spotify.')   # no permission blame without error -1743
             preview.assert_not_called()
             behind.assert_not_called()
+
+    def test_play_blames_permission_only_for_error_1743_else_falls_back_to_youtube_music(self):
+        item = ('spotify:track:' + 'G' * 22, 'Ake')
+        denied = subprocess.CompletedProcess([], 1, '', 'execution error: Not authorized to send Apple events to Spotify. (-1743)')
+        with patch.object(atticus, 'spotify_item', return_value=item), patch.object(atticus, 'osa', return_value='Editor'), \
+             patch.object(atticus.subprocess, 'run', return_value=denied), patch.object(atticus, 'youtube_play') as yt:
+            self.assertIn("Automation permission", atticus.play('ake'))
+            yt.assert_not_called()
+        other = subprocess.CompletedProcess([], 1, '', 'execution error: Can\u2019t get track. (-1728)')
+        with patch.object(atticus, 'spotify_item', return_value=item), patch.object(atticus, 'osa', return_value='Editor'), \
+             patch.object(atticus.subprocess, 'run', return_value=other), patch.object(atticus, 'youtube_play', return_value='Playing ake on YouTube Music.') as yt:
+            self.assertEqual(atticus.play('ake'), 'Spotify could not start Ake, so: Playing ake on YouTube Music.')
+            yt.assert_called_once_with('ake', music=True)
 
     def test_queue_uses_discovered_ax_labels_and_verifies_the_toast(self):
         item = ('spotify:track:' + 'C' * 22, 'Fixture song')

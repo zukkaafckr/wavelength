@@ -152,9 +152,11 @@ def _apps_and_windows(s):
     if m and not re.search(r'\b(this|that|it|them|all|everything|desktop|sidebar|toolbar|dock|menu|cursor|mouse)\b', m.group('a')):
         want = m.group('a').strip()
         for n, _ in zc._running_apps():
-            if n.lower() == want or n.lower().split()[-1] == want:
+            if n.lower() == want or want in n.lower().split() or n.lower().startswith(want + ' '):
                 zc._osa(_se(f'set visible of process "{_q(n)}" to false'))
                 return f"Hid {n}{_c()}."
+        if _app_exists(want.title()) or _app_exists(want):
+            return f"{want.title()} isn't running{_c()}."
     return None
 
 
@@ -285,7 +287,7 @@ def _wifi_iface():
 
 
 _WIFI_SW = re.compile(r"^(?:turn|switch|set|put|shut|power|enable|disable)\b.*\bwifi\b|^wifi (?:on|off)$|^(?:turn|switch) wifi (?:on|off)$")
-_WIFI_Q = re.compile(r"^(?:is )?(?:my )?(?:the )?wifi (?:on|off|enabled|turned on|working)\??$|^is wifi (?:on|off|enabled)$")
+_WIFI_Q = re.compile(r"^is (?:my )?(?:the )?wifi (?:on|off|enabled|turned on|working)\??$|^(?:my |the )?wifi (?:status|state|working)\??$")   # bare "wifi off" is a switch
 _WIFI_NAME = re.compile(r"^(?:what|which)(?: wifi| network)?(?: network)? (?:am i|are we|is my mac|is this mac)(?: connected| on| using| joined)?(?: to| on)?(?: wifi| network| which wifi| which network)?$|"
                         r"^(?:what is|what|which) (?:my |the )?(?:wifi|network)(?: name| network)?(?: i m connected to| am i on| am i connected to| i am on| is this)?$|^(?:what|which) wifi(?: am i)?(?: on| connected to| connected)?$|"
                         r"^(?:name of (?:my |the )?wifi|current wifi|wifi name|network name|ssid)$|^what is the name of (?:my |the |this )?wifi$|^which wifi (?:am i|is my mac) (?:on|connected to|using)$|^what wifi am i (?:connected to|on|using)$")
@@ -328,7 +330,7 @@ def _blueutil():
 
 
 _BT_SW = re.compile(r"^(?:turn|switch|set|put|power|enable|disable)\b.*\bbluetooth\b|^bluetooth (?:on|off)$")
-_BT_Q = re.compile(r"^(?:is )?(?:my )?(?:the )?bluetooth (?:on|off|enabled|turned on|status|state)\??$|^bluetooth status$|^is bluetooth (?:on|off|enabled)$")
+_BT_Q = re.compile(r"^is (?:my )?(?:the )?bluetooth (?:on|off|enabled|turned on|status|state)\??$|^(?:my |the )?bluetooth (?:status|state)\??$")   # bare "bluetooth on" is a switch
 
 
 def _bluetooth(s):

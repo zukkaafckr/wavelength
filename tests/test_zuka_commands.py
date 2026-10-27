@@ -165,7 +165,7 @@ class Matching(Base):
         for p in ['export check', 'check exports', 'how many exports']:
             with mock.patch.object(z, '_export_check', return_value='x'):
                 self.assertEqual(z.handle(p), 'x', p)
-        for p in ['any new messages', 'check whatsapp', 'any new mail', 'unread', 'anything new']:
+        for p in ['any new messages', 'any new mail', 'unread', 'anything new']:
             with mock.patch.object(z, '_unread', return_value='x'):
                 self.assertEqual(z.handle(p), 'x', p)
         for p in ['next meeting', 'whats my next meeting', "what's my next meeting"]:
@@ -713,7 +713,9 @@ class Inbox(Base):
 
     def test_whatsapp_gmail_parse(self):
         self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'snippet': 'call me', 'time': '9:05', 'unread': True}, {'name': 'X', 'snippet': 'hi', 'time': 'Yesterday', 'unread': False}]),
-                         "Latest on WhatsApp, 1 unread in all: Mom, 'call me', at 9:05; X, 'hi', yesterday.")
+                         "1 unread chat on WhatsApp. Mom: 'call me', at 9:05.")
+        self.assertEqual(z._fmt_whatsapp([{'name': 'Mom', 'snippet': 'call me', 'time': '9:05'}, {'name': 'X', 'snippet': 'hi', 'time': 'Yesterday'}]),
+                         "Nothing unread on WhatsApp. Latest chats. Mom: 'call me', at 9:05. X: 'hi', yesterday.")
         self.assertEqual(z._fmt_whatsapp([{'name': 'X', 'snippet': 'hi', 'me': True}]), 'Nothing new on WhatsApp, J.')
         self.assertEqual(z._fmt_gmail([{'name': 'Riya', 'subject': 'batch brief'}, {'name': 'ClickUp', 'subject': ''}]),
                          'Gmail: 2 unread: Riya, about batch brief; ClickUp.')

@@ -38,7 +38,7 @@ _ACTION = re.compile(r"""^(?:hey[ ]|ok[ ]|okay[ ]|please[ ]|can[ ]you[ ]|could[ 
        remind|schedule|book|add|set|turn|switch|toggle|enable|disable|mute|unmute|lock|restart|shut|sleep|click|press|type|scroll|drag|take|record|
        screenshot|install|update|edit|export|import|render|cut|trim|merge|generate|fix|debug|code|deploy|commit|push|pull|order|buy|pay|check|
        sing|wake|read|summari[sz]e|transcribe|navigate|go to|take me|draft|write|compose|rewrite|proofread|schedule|cancel|join|log|
-       tidy|clean|clear|arrange|fill|sync|prepare|fetch|get[ ]me|bring|pull[ ]up|bring[ ]up|put|place|split|resize|maximi[sz]e|minimi[sz]e|hide|unhide|attach|upload|print|pin|unpin|follow|unfollow|like|subscribe|reset|redo|undo|refresh|reload|connect|disconnect|pair|install|uninstall|empty|archive|label|tag|assign|mark|approve|reject|submit)\b""", re.I | re.X)
+       tidy|clean|clear|arrange|fill|sync|prepare|fetch|get[ ]me|bring|pull[ ]up|bring[ ]up|put|place|split|resize|maximi[sz]e|minimi[sz]e|hide|unhide|attach|upload|print|pin|unpin|follow|unfollow|like|subscribe|reset|redo|undo|refresh|reload|connect|disconnect|pair|install|uninstall|empty|archive|label|tag|assign|mark|approve|reject|submit|research|investigate|analy[sz]e|compare|brainstorm|plan|outline|benchmark|scrape|crawl|audit)\b""", re.I | re.X)
 _NOUNS = re.compile(r'\b(my (?:files?|folders?|downloads|desktop|documents|screen|clipboard|inbox|emails?|calendar|messages|mac|laptop|computer|tabs?|windows?|apps?)|'
                     r'finder|premiere|capcut|brave|safari|chrome|whatsapp|slack|discord|gmail|clickup|drive|terminal|higgsfield|submagic|remotion|ffmpeg|'
                     r'this (?:window|page|tab|file|screen|video|image))\b', re.I)
