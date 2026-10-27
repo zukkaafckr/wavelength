@@ -56,7 +56,8 @@ enum WhisperDictation {
     }
     static func language(_ pref: String) -> String {
         let l = pref.trimmingCharacters(in: .whitespaces).lowercased()
-        return l.isEmpty || l.count > 8 || l.contains(where: { !($0.isLetter || $0 == "-") }) ? "auto" : l
+        if l == "any" { return "auto" }   // real auto-detect only when asked: on short pieces it guesses wrong (English heard as Chinese)
+        return l.isEmpty || l == "auto" || l.count > 8 || l.contains(where: { !($0.isLetter || $0 == "-") }) ? "en" : l
     }
     // Speed: Whisper encodes a fixed 30 s window (2.6 s warm on an 8 GB M1, far more on battery or under load), but the encoder can be told to look
     // at only the first 12 s (-ac 600): about 1 s with the same words. So there are two warm servers: "short" for takes up to shortLimit seconds,
@@ -72,12 +73,29 @@ enum WhisperDictation {
     static func timeout(audioSeconds: Double) -> Double { isShort(audioSeconds: audioSeconds) ? max(timeoutFloor, 0.5 * audioSeconds + 6) : 0.6 * audioSeconds + 14 }
     // Whisper answered but not with this speech: far fewer words than Apple heard, or the same few words looping.
     static func garbled(_ whisper: String, apple: String) -> Bool {
+        if foreignScript(whisper, apple: apple) { return true }
         let w = whisper.split(whereSeparator: { $0.isWhitespace }).map { $0.lowercased() }, a = apple.split(whereSeparator: { $0.isWhitespace }).count
         if a >= 6 && Double(w.count) < 0.5 * Double(a) { return true }
         guard w.count >= 12 else { return false }
         var grams: [String: Int] = [:]
         for i in 0...(w.count - 3) { grams[w[i..<(i + 3)].joined(separator: " "), default: 0] += 1 }
         return (grams.values.max() ?? 0) >= 4 && apple.split(whereSeparator: { $0.isWhitespace }).count < w.count / 2
+    }
+    // Letters in a script Apple did not hear at all (Chinese, Japanese, Korean, Cyrillic, Arabic... for Latin or Devanagari speech): Whisper misheard the language.
+    static func scripts(_ s: String) -> Set<String> {
+        var out = Set<String>()
+        for u in s.unicodeScalars where u.properties.isAlphabetic {
+            switch u.value {
+            case 0x0041...0x024F: out.insert("latin")
+            case 0x0900...0x097F: out.insert("devanagari")
+            default: out.insert(String(u.value >> 8))   // a 256-code block stands in for the script
+            }
+        }
+        return out
+    }
+    static func foreignScript(_ whisper: String, apple: String) -> Bool {
+        let a = scripts(apple), w = scripts(whisper)
+        return !a.isEmpty && !w.subtracting(a).subtracting(["latin", "devanagari"]).isEmpty
     }
     private static func sub(_ s: String, _ pattern: String, _ with: String, _ options: NSRegularExpression.Options = [.caseInsensitive]) -> String {
         guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return s }
@@ -3587,7 +3605,7 @@ final class App: NSObject, WKScriptMessageHandler {
             whisperDelivered = true
             try? FileManager.default.removeItem(atPath: audio.path)
             var r = WhisperDictation.resolve(result, apple: source)
-            if r.why == nil, dictateMerge, WhisperDictation.garbled(r.text, apple: source) { r = (source, true, "the text looked wrong") }
+            if r.why == nil, dictateMerge && WhisperDictation.garbled(r.text, apple: source) || WhisperDictation.foreignScript(r.text, apple: source) { r = (source, true, "the text looked wrong") }   // never another language than was spoken
             if let why = r.why { NSLog("Whisper: %@ (%.1f s of audio, limit %.1f s); inserting the Apple text", why, audio.seconds, limit); dictateFellBack = true; dictateTimedOut = result == nil }
             else { NSLog("Whisper dictation: %.2f s after key-up for %.1f s of audio", Date().timeIntervalSince(dictateReleased), audio.seconds) }
             if result == nil { take.abort(); WhisperRunner.shared.abort() }
