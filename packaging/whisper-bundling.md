@@ -21,7 +21,7 @@ To ship it inside the app later:
    They need no extra entitlements: they only read the model and a WAV, and the server listens on 127.0.0.1.
 4. Code change: in `WhisperDictation.tool` look in `Bundle.main.resourcePath + "/whisper/"` first;
    nothing else changes. `modelPath` stays in `~/.local/share/whisper/`.
-5. The server is started lazily on the first dictation, stopped after 10 idle minutes and at app quit, and a
+5. The server is started lazily on the first dictation, stopped after 45 idle minutes (a long take's full-window server after 10) and at app quit, and a
    stale one from a crashed app is killed through the pid file in the temp folder.
 6. Memory: the q5_0 model plus Metal buffers is roughly 1 GB resident while the server is warm. On 8 GB
    Macs that is why it idles out. Do not raise the thread count above 4.

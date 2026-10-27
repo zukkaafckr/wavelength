@@ -252,7 +252,7 @@ if (classes.has('held') || card.style.minHeight || fitted !== 2) process.exit(2)
         self.assertIn('js("resizeDone")', mouse_up)
 
     def test_settings_disabled_segment_looks_off_and_usage_cards_fill_rows(self):
-        self.assertIn("[data-k=dictateMode] [data-v=cleanup]').disabled = other", self.settings)
+        self.assertIn("[data-k=dictateMode] [data-v=cleanup]').disabled = false", self.settings)   # the free on-device cleanup needs no Claude
         self.assertIn('.seg button:disabled { opacity: .4; pointer-events: none; }', self.settings)
         self.assertIn('.seg button:disabled { opacity: .4; pointer-events: none; }', self.onboarding)
         self.assertIn('grid-template-columns: repeat(6, 1fr)', self.settings)

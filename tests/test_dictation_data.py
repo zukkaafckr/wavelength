@@ -130,7 +130,8 @@ precondition(DictationData.fixed("Sarth") == "Sarth", "forgotten swap")
 print("learned fixes ok")
 '''
         self.assertIn('learned fixes ok', run_swift(self, swift))
-        self.assertIn('let value = DictationData.fixed(heard)', source)   # every insert path goes through insertDictation
+        self.assertIn('let value = tidied ? heard : DictationData.fixed(heard)', source)   # every insert path goes through insertDictation (the cleanup path applies the fixes itself)
+        self.assertIn('text = DictationData.fixed(text)', source)
         self.assertIn('DictationData.fix(fix.heard, word)', source)
         self.assertEqual(source.count('DictationData.forget('), 2)   # Undo and Settings remove both drop the fix
 

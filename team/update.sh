@@ -15,6 +15,7 @@ if [ $AUTO = 1 ]; then   # never rebuild (it restarts the app) while someone is 
   [ "${idle:-0}" -ge 600 ] || exit 0
 fi
 cp team/managed.json "$HOME/.config/atticus/managed.json" 2>/dev/null || true   # the app reads its "locked" list at launch
+[ -n "$WAVELENGTH_TEST" ] || nohup bash team/deps.sh >>"$LOG" 2>&1 &   # the free engines (dictation, chat brain) install once in the background, even with no new version
 CALL_NOW=$(sed -n 's/^name=.* call=\(.*\)$/\1/p' team/.personalized 2>/dev/null)
 [ -n "$CALL_NOW" ] && CALL="$CALL_NOW" python3 - <<'PY' 2>>"$LOG" || true
 import json, os   # the owner's voice / work-setup choices for this person: no restart needed, applied every run

@@ -337,7 +337,7 @@
       <div class="row"><div class="t"><b id="dictatelabel">Dictation shortcut</b><span id="dictatehint"></span></div><div class="keyfield"><button class="kf" id="dictatechange" aria-labelledby="dictatelabel" aria-describedby="dictatehint"></button><button class="x" id="dictateclear" aria-label="Clear dictation shortcut">×</button></div></div>
       <div class="row" id="globefix" hidden><div class="t"><b>Set Press 🌐 key to Do Nothing</b></div><button class="btn" data-do="globeKey">Open Keyboard Settings</button></div>
       <div class="row"><div class="t"><b>Dictated text</b><span id="dictatemodehint">Clean up drops fillers, fixes misheard words.</span></div><div class="seg" data-k="dictateMode"><button data-v="verbatim">Verbatim</button><button data-v="cleanup">Clean up</button></div></div>
-      <div class="row"><div class="t"><b>Accuracy</b><span id="dictateenginehint">Free, unlimited, runs on this Mac.</span></div><div class="seg" data-k="dictateEngine"><button data-v="whisper">Whisper — most accurate</button><button data-v="apple">Apple — fastest</button></div></div>
+      <div class="row"><div class="t"><b>Accuracy</b><span id="dictateenginehint">Apple shows your words live, Whisper finishes them. Free, runs on this Mac.</span></div><div class="seg" data-k="dictateEngine"><button data-v="best">Best — Apple live + Whisper</button><button data-v="apple">Apple only</button><button data-v="whisper">Whisper only</button></div></div>
     </div>
     <h3>Dictionary</h3>
     <div class="group">
@@ -699,11 +699,11 @@
     $('dictatechange').classList.toggle('bad', dictateHotkeyTaken && recording !== 'dictate');
     if (recording !== 'dictate' && $('dictatehint').className !== 'warn') { $('dictatehint').textContent = dictateHint(); $('dictatehint').className = dictateHotkeyTaken ? 'taken' : ''; }
     dim('dictateMode', !P.dictateHotkeyLabel);
-    const whisper = P.dictateEngine !== 'apple' && P.whisperReady === true;   // Whisper dictation never calls Claude: it tidies the text on this Mac
+    const whisper = P.whisperReady === true || P.dictateEngine === 'apple';   // dictation never calls Claude: it tidies the text on this Mac
     dim('dictateEngine', !P.dictateHotkeyLabel);
-    $('dictateenginehint').textContent = P.dictateEngine !== 'apple' && P.whisperReady === false ? 'Whisper is not installed on this Mac yet, so Apple is used. Free, unlimited, runs on this Mac.' : 'Free, unlimited, runs on this Mac.';
-    document.querySelector('[data-k=dictateMode] [data-v=cleanup]').disabled = other || whisper;
-    $('dictatemodehint').textContent = whisper ? 'Whisper drops fillers on this Mac. Clean up is for Apple speech.' : other ? 'Clean up needs Claude.' : 'Clean up drops fillers, fixes misheard words.';
+    $('dictateenginehint').textContent = P.dictateEngine !== 'apple' && P.whisperReady === false ? 'Whisper is not installed on this Mac yet, so Apple is used. Free, runs on this Mac.' : ({ apple: 'Apple text goes in the moment you let go, then it is tidied. Free, runs on this Mac.', whisper: 'Whisper finishes your words. Free, runs on this Mac.' })[P.dictateEngine] || 'Apple shows your words live, Whisper finishes them. Free, runs on this Mac.';
+    document.querySelector('[data-k=dictateMode] [data-v=cleanup]').disabled = false;
+    $('dictatemodehint').textContent = 'Clean up drops fillers, fixes self-corrections, punctuation and lists, on this Mac. Verbatim keeps every word.';
     document.querySelectorAll('.seg[data-k]').forEach(g => g.querySelectorAll('button').forEach(b => {
       const value = g.dataset.k === 'model' && P.model === 'haiku' ? (P.agentModel === 'opus' ? 'opus' : 'sonnet') : P[g.dataset.k];
       const on = value === b.dataset.v; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);

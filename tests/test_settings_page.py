@@ -105,14 +105,13 @@ class SettingsPageTests(unittest.TestCase):
         self.assertEqual(out['result'], [[True, True, 'Hold to talk. Double-tap to lock.'], True])
         self.assertIn({'do': 'globeKey'}, out['posts'])
 
-    def test_cleanup_is_disabled_with_a_reason_for_pi_and_devin(self):
+    def test_cleanup_stays_available_for_every_client(self):   # the free on-device cleanup needs no Claude
         out = self.page("""const state=client=>{st.load({prefs:{client,hotkeyLabel:'⌃⌥Space',dictateHotkeyLabel:'⌃⌥D',dictateMode:'cleanup'}});
             const clean=document.querySelector('[data-k=dictateMode] [data-v=cleanup]');
             return [clean.disabled,$('dictatemodehint').textContent];};
             return [state('pi'),state('devin'),state('claude')];""")
-        self.assertEqual(out['result'], [[True, 'Clean up needs Claude.'],
-                                         [True, 'Clean up needs Claude.'],
-                                         [False, 'Clean up drops fillers, fixes misheard words.']])
+        hint = 'Clean up drops fillers, fixes self-corrections, punctuation and lists, on this Mac. Verbatim keeps every word.'
+        self.assertEqual(out['result'], [[False, hint]] * 3)
 
     def test_dictation_clash_warns_in_its_row_then_settles(self):
         out = self.page("""st.load({prefs:{hotkeyLabel:'⌃⌥Space',dictateHotkeyLabel:'⌃⌥D'},dictateHotkeyTaken:true});

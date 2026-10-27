@@ -189,10 +189,11 @@ struct Selection { let text: String }
 struct AppRef: Equatable {}
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: AppRef? }
 final class Harness {
-    var dictateSelectionPending = false, dictateCleanup = false, busy = true, dictating = true
+    var dictateSelectionPending = false, dictateCleanup = false, dictateTidy = false, busy = true, dictating = true
     var dictateWhisper = false, whisperDelivered = true
     func whisperDiscard() {}
     func whisperTranscribe(apple: String) {}
+    func finalizeDictation(_ value: String, apple: String?) { insertDictation(value) }   // the free cleanup is tested in test_dictation_whisper
     var dictateID = 1, text = "Exact words.", inserted: [String] = [], dictateBefore = "Notes before the cursor."
     var dictateFellBack = false, dictateTimedOut = false, dictateSelectionRetried = false
     var dictationTargetApp: AppRef?
@@ -279,7 +280,7 @@ final class Target {
     }
 }
 final class Harness {
-    var dictateSelection: Target?, busy = true, dictating = true, dictateID = 1
+    var dictateSelection: Target?, busy = true, dictating = true, dictateID = 1, lastDictation: String?
     var failed: [String] = []
     func cue(_ value: String) {}
     func js(_ call: String, _ arg: Any? = nil) {}
@@ -614,7 +615,7 @@ const set = () => { const s = new Set(); return { add: (...c) => c.forEach(x => 
 const kids = [], thread = { children: kids, get firstElementChild() { return kids[0]; }, querySelectorAll: q => q === '.turn.dict' ? kids.filter(k => k.className.split(' ').includes('dict')) : [], append: d => kids.push(d) };
 const node = () => { const n = { classList: set(), className: '', remove: () => kids.splice(kids.indexOf(n), 1), prepend() {}, firstChild: { classList: set() } }; return n; };
 const document = { body: { classList: set() }, createElement: node }, card = { classList: set() };
-const $ = id => id === 'thread' ? thread : id === 'card' ? card : { children: [], value: '' };
+const $ = id => id === 'thread' ? thread : id === 'card' ? card : { children: [], value: '', firstChild: {} };
 const miniClear = () => {}, clockStop = () => {}, comp = () => {}, markShot = () => '', setState = () => {}, status = () => {}, fit = () => {}, pill = () => {};
 let hover, listening, working, boost, atBottom;
 ''' + helper + r'''
@@ -672,11 +673,12 @@ if (!answer.classList.contains('old')) process.exit(console.error('a real ask no
         self.assertIn('pillOn = on', pill)
         self.assertNotIn('280', pill)
         heard = source[source.index('    func heard(_ now: String)'):]
-        self.assertIn('if dictating { scheduleDictateAhead(); return }', heard)
+        self.assertIn('if dictating { scheduleDictateAhead(); showLive(now); return }', heard)
         self.assertIn('self?.startDictateAhead(early: true)', heard)
         self.assertIn('!early || dictateAheadRuns < 2', heard)
         insert = source[source.index('    func insertDictation('):source.index('    func typed(')]
-        self.assertIn('cue("soundDone"); js("dictated", ["text": "", "ok": true]); hide(after: 0.8)', insert)
+        self.assertIn('cue("soundDone"); js("dictated", ["text": "", "ok": true])', insert)
+        self.assertIn('hide(after: tidied ? min(3, 0.8 + Double(value.split(separator: " ").count) / 14) : 0.8)', insert)   # the finished words stay a moment beside the check
 
 if __name__ == '__main__':
     unittest.main()

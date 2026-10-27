@@ -109,6 +109,13 @@
   #dictwave { display: none; }
   body.dictate.hearing #dictwave { display: flex; align-items: center; gap: 2px; width: 43px; height: 28px; flex: none; }
   #dictwave i { display: block; width: 3px; height: 3px; border-radius: 3px; background: var(--accent); transition: height .1s var(--ease); }
+  /* the words as they are spoken: Apple's live text beside the wave, the newest lines at the bottom, older ones fading out above; after release the finished text */
+  #dlive { display: none; }
+  body.dictate.talk:is(.hearing, .finishing, .done) #dlive { display: flex; flex-direction: column; justify-content: flex-end; flex: none; width: 250px; height: 48px; overflow: hidden;
+    font-size: 12px; line-height: 16px; color: #f5f5f7; text-align: left; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 45%); mask-image: linear-gradient(to bottom, transparent 0, #000 45%); animation: fade .2s var(--ease) both; }
+  #dlive span { display: block; overflow-wrap: anywhere; }
+  body.dictate.talk.finishing #dlive { opacity: .7; transition: opacity .2s var(--ease); } body.dictate.talk.done #dlive { color: var(--fg2); }
+  body.dictate.talk:is(.hearing, .finishing, .done) #card { padding: 0 14px 0 4px; }
   #check { display: none; }
   body.dictate.done #check { display: block; position: relative; flex: none; width: 28px; height: 28px; animation: morph .35s var(--spring) both; }
   body.dictate.done #check::before { content: ""; position: absolute; left: 8px; top: 8px; width: 12px; height: 6px; border-left: 2px solid #30d158; border-bottom: 2px solid #30d158; border-radius: 1px; transform: rotate(-45deg); }
@@ -452,7 +459,7 @@
   <span id="dictwave" role="img" aria-label="Listening"></span>
   <div id="thread"></div>
   <svg id="lock" viewBox="0 0 10 13" role="img" aria-label="Locked. Press the shortcut to finish."><path d="M2.5 6V4a2.5 2.5 0 0 1 5 0v2"/><rect x="0" y="5.5" width="10" height="7.5" rx="2"/></svg>
-  <i id="check"></i><div class="dn" id="dn" role="status"></div>
+  <i id="check"></i><div class="dn" id="dn" role="status"></div><div id="dlive" aria-hidden="true"><span></span></div>
   <div id="pointbar" role="group" aria-label="Point at your screen"><span class="chip"><img alt="What you marked" hidden><i></i><span>Marked</span><button class="rm" title="Remove mark" aria-label="Remove mark"><svg viewBox="0 0 10 10"><path d="M2 2l6 6M8 2L2 8"/></svg></button></span>
     <span class="hint" aria-live="polite"></span><span class="keys"><button class="go gotit">Got it</button></span></div>
   <div id="comp" inert><input id="ask" placeholder="Ask Zuka…" autocomplete="off" spellcheck="false" aria-label="Ask Zuka">
@@ -522,6 +529,7 @@
   const dictateMode = on => {
     document.body.classList.toggle('dictate', !!on); document.body.classList.remove('locked', 'hearing'); $('thread').querySelectorAll('.turn.dict').forEach(e => e.remove());
     for (const b of $('dictwave').children) b.style.height = ''; pill('');
+    document.body.classList.remove('talk'); $('dlive').firstChild.textContent = '';
   };
   for (let i = 0; i < 9; i++) $('dictwave').append(document.createElement('i'));
   const post = m => webkit.messageHandlers.c.postMessage(m);
@@ -950,6 +958,16 @@
       working = true;
       boost = 1; $('orb').style.transform = ''; setState('solving');
       part('q')?.classList.remove('live', 'hear'); status('Thinking…', true); fit();
+    },
+    live(w) {   // Apple's partial words while dictating (the newest at the bottom); the pill widens once, when the first words arrive
+      if (!document.body.classList.contains('dictate')) return;
+      const t = String(w || '').replace(/\s+/g, ' ').trim(), on = document.body.classList.contains('talk');
+      $('dlive').firstChild.textContent = t; document.body.classList.toggle('talk', !!t); if (on !== !!t) fit(false);
+    },
+    final(w) {   // Whisper's finished, cleaned-up text replaces the live words while it goes in
+      if (!document.body.classList.contains('dictate')) return;
+      const t = String(w || '').replace(/\n+/g, ' ⏎ ').trim(), on = document.body.classList.contains('talk');
+      $('dlive').firstChild.textContent = t; document.body.classList.toggle('talk', !!t); if (on !== !!t) fit(false);
     },
     finishing(label) {   // dictation released: the wave goes and the pill folds into the working orb
       listening = false; boost = 1; $('orb').style.transform = ''; document.body.classList.remove('locked', 'hearing');

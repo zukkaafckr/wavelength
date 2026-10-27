@@ -27,12 +27,15 @@ enum WhisperDictation {
     static var modelPath: String { NSHomeDirectory() + "/.local/share/whisper/" + modelName }
     static let brandWords = ["Zuka", "Wavelength", "Premiere Pro", "Submagic", "Higgsfield", "Claude"]
     static let promptLimit = 200
-    static let idleSeconds = 600.0   // the warm server stops after 10 minutes without a dictation
+    static let idleSeconds = 2700.0, fullIdleSeconds = 600.0   // the fast server stays warm 45 minutes after a dictation (about 1 GB), the full-window one (long takes only, rarely used) 10
     static func tool(_ name: String, exists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> String? {
         ["/opt/homebrew/bin/", "/usr/local/bin/", NSHomeDirectory() + "/.local/bin/"].map { $0 + name }.first(where: exists)
     }
     // "whisper" only when asked for (the default) AND whisper-cli and the model are really there; else Apple.
     static func engine(pref: String, cli: Bool, model: Bool) -> String { pref != "apple" && cli && model ? "whisper" : "apple" }
+    // Settings "Accuracy": "best" (also the empty default) = Apple's live words and its text as the safety net, Whisper's text as the answer, merged; "whisper" = Whisper's
+    // answer alone (Apple's text only if Whisper fails); "apple" = Apple's text goes in at key-up.
+    static func merges(pref: String) -> Bool { pref.isEmpty || pref == "best" }
     static func active(pref: String) -> Bool {
         engine(pref: pref, cli: tool("whisper-cli") != nil, model: FileManager.default.fileExists(atPath: modelPath)) == "whisper"
     }
@@ -64,8 +67,18 @@ enum WhisperDictation {
     static func serverArguments(model: String, port: Int, short: Bool) -> [String] {
         ["-m", model, "--host", "127.0.0.1", "--port", "\(port)", "-t", "4", "-mc", "\(textContext)", "-bs", "1", "-bo", "1"] + (short ? ["-ac", "\(shortContext)"] : [])
     }
-    static let timeoutFloor = 4.0
-    static func timeout(audioSeconds: Double) -> Double { max(timeoutFloor, 0.5 * audioSeconds + (isShort(audioSeconds: audioSeconds) ? 0 : 4)) }
+    // How long one piece may take before Apple's text goes in instead: room for a busy 8 GB Mac, and far more for a full-window piece (2.6 s warm, several times that under load).
+    static let timeoutFloor = 8.0
+    static func timeout(audioSeconds: Double) -> Double { isShort(audioSeconds: audioSeconds) ? max(timeoutFloor, 0.5 * audioSeconds + 6) : 0.6 * audioSeconds + 14 }
+    // Whisper answered but not with this speech: far fewer words than Apple heard, or the same few words looping.
+    static func garbled(_ whisper: String, apple: String) -> Bool {
+        let w = whisper.split(whereSeparator: { $0.isWhitespace }).map { $0.lowercased() }, a = apple.split(whereSeparator: { $0.isWhitespace }).count
+        if a >= 6 && Double(w.count) < 0.5 * Double(a) { return true }
+        guard w.count >= 12 else { return false }
+        var grams: [String: Int] = [:]
+        for i in 0...(w.count - 3) { grams[w[i..<(i + 3)].joined(separator: " "), default: 0] += 1 }
+        return (grams.values.max() ?? 0) >= 4 && apple.split(whereSeparator: { $0.isWhitespace }).count < w.count / 2
+    }
     private static func sub(_ s: String, _ pattern: String, _ with: String, _ options: NSRegularExpression.Options = [.caseInsensitive]) -> String {
         guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return s }
         return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: with)
@@ -99,13 +112,19 @@ enum WhisperDictation {
 
 struct WhisperError: LocalizedError { let errorDescription: String? }
 
-// Writes the dictation as 16 kHz mono 16-bit WAV while it is spoken: appended once a second, never held in memory, no length cap.
+// Writes the dictation as 16 kHz mono 16-bit WAV while it is spoken: appended once a second, never held in memory, no length cap. It also listens for pauses:
+// at a pause (or at the quietest moment of the last 2.5 s) after 5-10 s it cuts off the stretch so far as its own small WAV and reports it through onChunk, so a long take is
+// transcribed piece by piece while it is spoken. The last stretch is `tail` after finish().
 final class WhisperRecorder {
     static let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+    static let frame = 800, maxChunk = 10.2   // 50 ms frames; no stretch is longer than this, so each fits the fast server's 12 s window
     let path: String
+    var onChunk: ((_ wav: String, _ seconds: Double, _ voiced: Bool) -> Void)?   // called on the recorder's queue
+    private(set) var tail: (path: String, seconds: Double, voiced: Bool)?
     private var handle: FileHandle?, pending = Data(), bytes = 0
     private var converter: AVAudioConverter?, from: AVAudioFormat?
     private let queue = DispatchQueue(label: "wavelength.whisper.recorder")
+    private var carry = [Int16](), scanned = 0, cutAt = 0, cuts = 0, peak = 0.02, quiet = 0, voicedFrames = 0, lowest: (rms: Double, end: Int)?, pieces: [String] = []
     init?(path: String) {
         self.path = path
         guard FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600]),
@@ -137,22 +156,69 @@ final class WhisperRecorder {
             guard handle != nil else { return }
             pending.append(data)
             if pending.count >= 32000 { flush() }
+            data.withUnsafeBytes { scan($0.bindMemory(to: Int16.self)) }
         }
     }
     private func flush() { if !pending.isEmpty { handle?.write(pending); bytes += pending.count; pending = Data() } }
-    // Ends the recording: the finished file and its length in seconds, or nil when nothing was captured.
+    private func scan(_ samples: UnsafeBufferPointer<Int16>) {
+        carry.append(contentsOf: samples)
+        var i = 0
+        while carry.count - i >= Self.frame {
+            var sum = 0.0
+            for j in i..<(i + Self.frame) { let v = Double(carry[j]) / 32768; sum += v * v }
+            i += Self.frame
+            frameDone(sqrt(sum / Double(Self.frame)))
+        }
+        carry.removeFirst(i)
+    }
+    private func frameDone(_ rms: Double) {
+        scanned += Self.frame * 2
+        peak = max(rms, peak * 0.995)   // the loudest recent speech, slowly forgotten: a pause is anything well under it
+        if rms < max(0.004, peak * 0.06) { quiet += 1 } else { quiet = 0; if rms > 0.006 { voicedFrames += 1 } }
+        let secs = Double(scanned - cutAt) / 32000
+        if secs > Self.maxChunk - 2.5, lowest == nil || rms <= lowest!.rms { lowest = (rms, scanned) }
+        var cut: Int?
+        if secs >= 5, quiet >= 8 { cut = scanned - 4 * Self.frame * 2 }          // 0.4 s of quiet: a sentence break
+        else if secs >= 8, quiet >= 4 { cut = scanned - 2 * Self.frame * 2 }     // 0.2 s will do after 8 s
+        else if secs >= Self.maxChunk { cut = lowest?.end ?? scanned }           // no pause at all: the quietest moment of the last 2.5 s
+        if let cut, cut > cutAt, let wav = slice(cutAt, cut) {
+            let voiced = voicedFrames >= 4
+            let seconds = Double(cut - cutAt) / 32000
+            cutAt = cut; cuts += 1; voicedFrames = 0; lowest = nil
+            onChunk?(wav, seconds, voiced)
+        }
+    }
+    // The audio between two byte offsets (after the header) as a WAV of its own.
+    private func slice(_ from: Int, _ to: Int) -> String? {
+        flush()
+        guard to > from, let r = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? r.close() }
+        try? r.seek(toOffset: UInt64(44 + from))
+        let data = r.readData(ofLength: to - from)
+        guard !data.isEmpty else { return nil }
+        let out = path + ".c\(pieces.count).wav"
+        guard FileManager.default.createFile(atPath: out, contents: Self.header(dataBytes: data.count) + data, attributes: [.posixPermissions: 0o600]) else { return nil }
+        pieces.append(out)
+        return out
+    }
+    // Ends the recording: the finished file and its length in seconds, or nil when nothing was captured. `tail` is then the part after the last cut.
     func finish() -> (path: String, seconds: Double)? {
         queue.sync {
             flush()
             guard let h = handle else { return nil }
             handle = nil
             try? h.seek(toOffset: 0); h.write(Self.header(dataBytes: bytes)); try? h.close()
+            if bytes > 0 {
+                if cuts == 0 { tail = (path, Double(bytes) / 32000, voicedFrames >= 4) }
+                else if let w = slice(cutAt, bytes) { tail = (w, Double(bytes - cutAt) / 32000, voicedFrames >= 4) }
+            }
             return bytes > 0 ? (path, Double(bytes) / 32000) : nil
         }
     }
     func discard() {
         queue.sync { try? handle?.close(); handle = nil; pending = Data() }
         try? FileManager.default.removeItem(atPath: path)
+        for p in pieces { try? FileManager.default.removeItem(atPath: p) }
     }
     static func sweep(keeping: String?) {   // a crash can leave a recording behind: nothing older than a minute is kept
         let tmp = NSTemporaryDirectory()
@@ -163,7 +229,7 @@ final class WhisperRecorder {
     }
 }
 
-// Runs the transcription: a warm whisper-server on 127.0.0.1 (started lazily, stopped after 10 idle minutes), else whisper-cli.
+// Runs the transcription: a warm whisper-server on 127.0.0.1 (started lazily, stopped after 45 idle minutes), else whisper-cli.
 final class WhisperRunner {
     static let shared = WhisperRunner()
     private init() {   // the warm whisper-server goes with the app (AppKit's quit notification, by name: this block only needs Foundation)
@@ -172,10 +238,18 @@ final class WhisperRunner {
     private let queue = DispatchQueue(label: "wavelength.whisper.server")   // server start/stop only: never blocks on a transcription
     private let lock = NSLock()   // the running job: cancel() works while a request waits
     private struct Srv { var process: Process, port: Int }
-    private var servers: [Bool: Srv] = [:], lastUse = Date(), idleItem: DispatchWorkItem?, serverBroken = false   // keyed by "short"
+    private var servers: [Bool: Srv] = [:], lastUse: [Bool: Date] = [:], idleItems: [Bool: DispatchWorkItem] = [:], serverBroken = false   // keyed by "short"
     private var cli: Process?, task: URLSessionTask?, job = 0
     private func pidFile(_ short: Bool) -> String { NSTemporaryDirectory() + "wavelength-whisper-server-\(short ? "short" : "full").pid" }
     var serverRunning: Bool { queue.sync { servers.values.contains { $0.process.isRunning } } }
+    // True once the server has loaded its model and listens (it binds its port only then): a cold one is not worth waiting for when Apple's text is in hand.
+    func ready(short: Bool = true) -> Bool {
+        guard let port = queue.sync(execute: { servers[short].flatMap { $0.process.isRunning ? $0.port : nil } }) else { return false }
+        let s = socket(AF_INET, SOCK_STREAM, 0); defer { close(s) }
+        var a = sockaddr_in(); a.sin_family = sa_family_t(AF_INET); a.sin_addr.s_addr = inet_addr("127.0.0.1"); a.sin_port = UInt16(port).bigEndian
+        a.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        return withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } } == 0
+    }
     private func current(_ mine: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return job == mine }
 
     private static func freePort() -> Int {
@@ -190,7 +264,7 @@ final class WhisperRunner {
     // Starts the server if it is not up, so the model is loaded by the time the key is released. Safe to call every dictation.
     func warm(serverPath: String?, model: String, short: Bool = true) {
         queue.async { [self] in
-            touch()
+            touch(short)
             guard let serverPath, servers[short]?.process.isRunning != true, !serverBroken else { return }
             if let old = (try? String(contentsOfFile: pidFile(short), encoding: .utf8)).flatMap({ Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }), old > 1 {
                 let ps = Process(); ps.executableURL = URL(fileURLWithPath: "/bin/ps"); ps.arguments = ["-p", "\(old)", "-o", "command="]
@@ -205,20 +279,20 @@ final class WhisperRunner {
             catch { serverBroken = true; NSLog("Whisper: server did not start: %@", error.localizedDescription) }
         }
     }
-    private func touch() {   // on the server queue
-        lastUse = Date(); idleItem?.cancel()
+    private func touch(_ short: Bool) {   // on the server queue: each server has its own idle clock
+        lastUse[short] = Date(); idleItems[short]?.cancel()
+        let limit = short ? WhisperDictation.idleSeconds : WhisperDictation.fullIdleSeconds
         let item = DispatchWorkItem { [weak self] in
-            guard let self, Date().timeIntervalSince(lastUse) >= WhisperDictation.idleSeconds - 1 else { return }
-            stopServer(); NSLog("Whisper: server stopped after %.0f idle seconds", WhisperDictation.idleSeconds)
+            guard let self, Date().timeIntervalSince(lastUse[short] ?? .distantPast) >= limit - 1 else { return }
+            stopServer(short); NSLog("Whisper: %@ server stopped after %.0f idle seconds", short ? "fast" : "full-window", limit)
         }
-        idleItem = item
-        queue.asyncAfter(deadline: .now() + WhisperDictation.idleSeconds, execute: item)
+        idleItems[short] = item
+        queue.asyncAfter(deadline: .now() + limit, execute: item)
     }
-    private func stopServer() {
-        for (short, s) in servers { s.process.terminate(); try? FileManager.default.removeItem(atPath: pidFile(short)) }
-        servers = [:]
+    private func stopServer(_ only: Bool? = nil) {
+        for (short, s) in servers where only == nil || only == short { s.process.terminate(); try? FileManager.default.removeItem(atPath: pidFile(short)); servers[short] = nil }
     }
-    func shutdown() { abort(); queue.async { [self] in idleItem?.cancel(); stopServer() } }
+    func shutdown() { abort(); queue.async { [self] in idleItems.values.forEach { $0.cancel() }; idleItems = [:]; stopServer() } }
     func abort() { lock.lock(); job += 1; task?.cancel(); task = nil; cli?.terminate(); cli = nil; lock.unlock() }
 
     func transcribe(wav: String, lang: String, prompt: String, serverPath: String?, cliPath: String, model: String, within seconds: Double, audioSeconds: Double = 0,
@@ -301,6 +375,446 @@ final class WhisperRunner {
         t.resume(); sem.wait()
         lock.lock(); if task === t { task = nil }; lock.unlock()
         return result
+    }
+}
+
+// Free "Wispr Flow" cleanup, all on this Mac and deterministic: fillers, backtracking ("at 5, no wait, 6" -> "at 6", "scratch that"), spoken punctuation,
+// numbers and times, "first ... second ..." lists, the user's vocabulary (fuzzy, so "Hicks field" becomes Higgsfield), capitals and sentence ends, and the
+// frontmost app's tone (chat apps drop the full stop of a short message, code editors and terminals stay verbatim). Hindi and Hinglish words are never "corrected".
+enum DictationTidy {
+    enum Style { case formal, casual, verbatim }
+    static let codeApps: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.apple.dt.Xcode",
+        "com.mitchellh.ghostty", "net.kovidgoyal.kitty", "dev.zed.Zed", "com.panic.Nova", "com.github.atom", "co.zeit.hyper", "org.alacritty", "com.exafunction.windsurf"]
+    static let chatApps: Set<String> = ["com.tinyspeck.slackmacgap", "net.whatsapp.WhatsApp", "desktop.WhatsApp", "com.hnc.Discord", "com.apple.MobileSMS", "ru.keepcoder.Telegram",
+        "org.whispersystems.signal-desktop", "com.facebook.archon", "com.microsoft.teams2", "com.microsoft.teams", "com.apple.iChat", "com.readdle.SparkDesktop.appstore.chat"]
+    // Tone from the frontmost app; a browser's window title tells chat tabs (Slack, WhatsApp Web) from mail and docs.
+    static func style(bundle: String?, title: String = "") -> Style {
+        let b = bundle ?? "", t = title.lowercased()
+        if codeApps.contains(b) || ["com.jetbrains.", "com.todesktop.", "com.sublimetext."].contains(where: b.hasPrefix) { return .verbatim }
+        if chatApps.contains(b) { return .casual }
+        if ["whatsapp", "slack", "discord", "messenger", "telegram"].contains(where: t.contains) { return .casual }
+        if ["codespaces", "vscode.dev", "github.dev"].contains(where: t.contains) { return .verbatim }
+        return .formal
+    }
+    static let hinglish: Set<String> = ["kya", "hai", "hain", "nahi", "nahin", "acha", "accha", "theek", "thik", "bhai", "yaar", "haan", "abhi", "kal", "aaj", "mera", "meri", "tera", "teri", "kuch", "bahut", "sab",
+        "toh", "matlab", "chalo", "arre", "arey", "dost", "paisa", "jaldi", "kaam", "ghar", "bhi", "mein", "aur", "lekin", "bilkul", "samajh", "karo", "karna", "kar", "hoga", "hua", "tum", "aap", "hum", "main", "mujhe", "tumhe", "wala", "wali", "namaste", "dhanyavaad", "shukriya"]
+    static func isHinglish(_ text: String) -> Bool {
+        text.unicodeScalars.contains { (0x0900...0x097F).contains($0.value) } || text.lowercased().split(whereSeparator: { !$0.isLetter }).filter { hinglish.contains(String($0)) }.count >= 2
+    }
+    private static func rx(_ p: String, _ o: NSRegularExpression.Options = [.caseInsensitive]) -> NSRegularExpression? { try? NSRegularExpression(pattern: p, options: o) }
+    static func sub(_ s: String, _ p: String, _ t: String, _ o: NSRegularExpression.Options = [.caseInsensitive]) -> String {
+        guard let re = rx(p, o) else { return s }
+        return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: t)
+    }
+    // Replaces every match with what `f` returns (nil keeps the match); the closure sees the match and the string.
+    static func each(_ s: String, _ p: String, _ o: NSRegularExpression.Options = [.caseInsensitive], _ f: (NSTextCheckingResult, NSString) -> String?) -> String {
+        guard let re = rx(p, o) else { return s }
+        let out = NSMutableString(string: s)
+        for m in re.matches(in: s, range: NSRange(location: 0, length: out.length)).reversed() {
+            let snapshot = out as NSString
+            if let r = f(m, snapshot) { out.replaceCharacters(in: m.range, with: r) }
+        }
+        return out as String
+    }
+    static func group(_ m: NSTextCheckingResult, _ i: Int, _ s: NSString) -> String { m.range(at: i).location == NSNotFound ? "" : s.substring(with: m.range(at: i)) }
+    static func tidy(_ raw: String, style: Style = .formal, terms: [String] = [], soft: [String] = [], isWord: (String) -> Bool = { _ in false }, apple: String? = nil) -> String {
+        var s = WhisperDictation.clean(raw)
+        guard style != .verbatim, !s.isEmpty else { return s }
+        let mixed = isHinglish(s)
+        s = fillers(s)
+        s = spoken(s)
+        s = scratch(s)
+        if !mixed { s = backtrack(s) }
+        s = numbers(s)
+        s = lists(s)
+        s = vocab(s, terms: terms, soft: soft, isWord: isWord, apple: apple)
+        return finish(s, style: style)
+    }
+
+    // MARK: fillers
+    static func fillers(_ text: String) -> String {
+        var s = text
+        s = sub(s, "(?:,\\s*)?(?<![\\p{L}'’-])(?:u+m+|u+h+|u+hm+|e+r+m+|e+r+|h+m+|m+m+|a+h+m+)(?![\\p{L}'’-])[,]?(?=\\s|$)", " ")
+        s = sub(s, "(^|[.!?]\\s+)you know,?\\s+(?=\\p{L})", "$1")
+        s = sub(s, "(?<![\\p{L}])(so|and|but|well),?\\s+like,\\s+", "$1 ")
+        s = sub(s, ",\\s*like,\\s+", ", ")
+        s = sub(s, "(^|[.!?]\\s+)like,\\s+", "$1")
+        s = sub(s, ",\\s*you know,\\s+", " ")
+        s = sub(s, ",\\s*you know([.?!]|$)", "$1")
+        s = sub(s, "\\b(?:kind of|sort of)\\s+(?=(?:kind of|sort of)\\b)", "")
+        s = sub(s, "\\s{2,}", " ")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: spoken punctuation
+    static func spoken(_ text: String) -> String {
+        var s = text
+        let article: Set<String> = ["a", "the", "this", "that", "oxford", "every", "each", "no", "one", "which", "your", "my", "his", "her", "their", "our", "any"]
+        func before(_ ns: NSString, _ loc: Int) -> String {
+            ns.substring(to: loc).trimmingCharacters(in: .whitespaces).split(separator: " ").last.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+        }
+        func mark(_ phrase: String, _ sym: String, guarded: Bool = false) {
+            s = each(s, "\\s*[,.!?;:]?\\s*(?<![\\p{L}])(?:" + phrase + ")(?![\\p{L}])[,.!?;:]?") { m, ns in
+                if guarded && article.contains(before(ns, m.range.location)) { return nil }
+                return sym + " "
+            }
+        }
+        mark("full stop|full-stop", "."); mark("question mark", "?"); mark("exclamation (?:mark|point)", "!"); mark("semi ?colon", ";"); mark("comma", ",", guarded: true)
+        s = sub(s, "\\s*[,.]?\\s*(?<![\\p{L}])period[.]?\\s*$", ".")   // "period" alone is a real word: only as the last word
+        s = sub(s, "\\s*(?<![\\p{L}])period(?![\\p{L}])[,.]?(?=\\s+new (?:line|paragraph))", ".")
+        s = sub(s, "[ \\t]*(?<![\\p{L}])(?:new paragraph|next paragraph)(?![\\p{L}])[,.]?[ \\t]*", "\n\n")
+        s = sub(s, "[ \\t]*(?<![\\p{L}])(?:new line|next line)(?![\\p{L}])[,.]?[ \\t]*", "\n")
+        return s
+    }
+
+    // MARK: "scratch that"
+    static func scratch(_ text: String) -> String {
+        var s = text
+        for _ in 0..<6 {
+            guard let re = rx("(?<![\\p{L}])(?:scratch that|strike that|delete that|ignore that|cancel that)(?![\\p{L}])[.,!]?(?!\\s+(?:itch|record))"),
+                  let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)), let r = Range(m.range, in: s) else { break }
+            var prefix = String(s[..<r.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let suffix = String(s[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if let last = prefix.last, ".!?\n".contains(last) { prefix.removeLast() }   // "Send it. Scratch that." drops that sentence
+            if let cut = prefix.lastIndex(where: { ".!?\n".contains($0) }) { prefix = String(prefix[...cut]) } else { prefix = "" }
+            s = (prefix.isEmpty ? "" : prefix + " ") + suffix
+            s = s.trimmingCharacters(in: .whitespaces)
+        }
+        return s
+    }
+
+    // MARK: backtracking: "at 5, no wait, 6" -> "at 6"; "the red one, I mean the blue one" -> "the blue one"
+    static let numPat = "(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)"
+    static let ones: [String: Int] = ["zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19]
+    static let tens: [String: Int] = ["twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90]
+    static func number(_ phrase: String) -> Int? {
+        let p = phrase.lowercased().split(whereSeparator: { $0 == " " || $0 == "-" }).map(String.init)
+        if p.count == 1 { return ones[p[0]] ?? tens[p[0]] }
+        if p.count == 2, let t = tens[p[0]], let o = ones[p[1]], (1...9).contains(o) { return t + o }
+        return nil
+    }
+    static func isNumeric(_ w: String) -> Bool {
+        let t = w.trimmingCharacters(in: .punctuationCharacters)
+        return t.first?.isNumber == true || number(t) != nil
+    }
+    static let units: Set<String> = ["am", "pm", "a.m.", "p.m.", "percent", "%", "dollars", "dollar", "rupees", "hours", "hour", "minutes", "minute", "days", "day", "weeks", "week", "months", "month", "years", "year", "o'clock"]
+    static func backtrack(_ text: String) -> String {
+        var s = text
+        let marker = "([,;.—-]?)\\s*(?<![\\p{L}])(no,? wait|wait,? no|actually,? no|or rather|make that|i mean|correction)(?![\\p{L}])[,:]?\\s*"
+        var guardCount = 0
+        var from = 0
+        while guardCount < 6, let re = rx(marker) {
+            guardCount += 1
+            let ns = s as NSString
+            guard from < ns.length, let m = re.firstMatch(in: s, range: NSRange(location: from, length: ns.length - from)) else { break }
+            let punct = group(m, 1, ns), word = group(m, 2, ns).lowercased()
+            let prefixRaw = ns.substring(to: m.range.location), after = ns.substring(from: m.range.location + m.range.length)
+            let weak = word == "i mean" || word == "correction"
+            if weak && punct.isEmpty && !prefixRaw.isEmpty { from = m.range.location + m.range.length; continue }   // "I mean it": only after a pause
+            // the correction runs to the next clause mark
+            let stop = after.firstIndex(where: { ",.;!?\n".contains($0) })
+            let terminated = stop != nil
+            let rText = String(stop.map { after[..<$0] } ?? after[...]), tail = stop.map { String(after[$0...]) } ?? ""
+            let r = rText.split(separator: " ").map(String.init)
+            let pre = prefixRaw.trimmingCharacters(in: .whitespaces)
+            var words = pre.split(separator: " ").map(String.init)
+            guard !r.isEmpty, !words.isEmpty else { from = m.range.location + m.range.length; continue }
+            var rest = tail, replaced = false
+            if isNumeric(r[0]) {
+                if let j = words.indices.suffix(6).last(where: { isNumeric(words[$0]) }) {
+                    var span = 1, repl = [r[0]]
+                    if r.count > 1 {
+                        if units.contains(r[1].lowercased()) { repl.append(r[1]); if j + 1 < words.count, units.contains(words[j + 1].lowercased()) { span = 2 } }
+                        else if terminated { repl = r }
+                    }
+                    words.replaceSubrange(j..<(j + span), with: repl)
+                    let left = Array(r.dropFirst(repl.count))
+                    rest = (left.isEmpty ? "" : " " + left.joined(separator: " ")) + tail
+                    replaced = true
+                }
+            } else if terminated || r.count <= 4 {
+                var clauseStart = 0
+                if let c = words.lastIndex(where: { ",.;!?:".contains($0.last ?? " ") }) { clauseStart = c + 1 }
+                let clause = words.count - clauseStart
+                let k = min(r.count, clause)
+                if k > 0 { words.replaceSubrange((words.count - k)..<words.count, with: r); replaced = true; rest = tail }
+            }
+            if !replaced { from = m.range.location + m.range.length; continue }
+            let head = words.joined(separator: " ") + rest
+            s = head
+            from = max(0, (words.joined(separator: " ") as NSString).length)
+        }
+        return s
+    }
+
+    // MARK: numbers and times
+    static func numbers(_ text: String) -> String {
+        var s = text
+        func ampm(_ g: String) -> String { g.lowercased().replacingOccurrences(of: ".", with: "") }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s+(?:oh\\s+(" + numPat + ")|(" + numPat + "))\\s*(a\\.?m\\.?|p\\.?m\\.?)(?![\\p{L}])") { m, ns in   // five thirty pm / five oh five pm
+            let oh = !group(m, 2, ns).isEmpty
+            guard let h = number(group(m, 1, ns)), (1...12).contains(h), let minute = number(group(m, oh ? 2 : 3, ns)), oh ? (1...9).contains(minute) : (10...59).contains(minute) else { return nil }
+            return String(format: "%d:%02d %@", h, minute, ampm(group(m, 4, ns)))
+        }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s*(a\\.?m\\.?|p\\.?m\\.?)(?![\\p{L}])") { m, ns in
+            guard let h = number(group(m, 1, ns)), (1...12).contains(h) else { return nil }
+            return "\(h) " + ampm(group(m, 2, ns))
+        }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s+o['’]clock(?![\\p{L}])") { m, ns in number(group(m, 1, ns)).flatMap { (1...12).contains($0) ? "\($0) o'clock" : nil } }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s+(?:percent|per cent)(?![\\p{L}])") { m, ns in number(group(m, 1, ns)).map { "\($0)%" } }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s+(?:dollars?|bucks)(?![\\p{L}])") { m, ns in number(group(m, 1, ns)).map { "$\($0)" } }
+        s = each(s, "(?<![\\p{L}])(" + numPat + ")\\s+(hours?|minutes?|seconds?|days?|weeks?|months?|years?|km|kg|mb|gb)(?![\\p{L}])") { m, ns in
+            guard let n = number(group(m, 1, ns)), n >= 2 else { return nil }
+            return "\(n) " + group(m, 2, ns)
+        }
+        s = each(s, "(?<![\\p{L}])((?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -](?:one|two|three|four|five|six|seven|eight|nine))(?![\\p{L}])") { m, ns in number(group(m, 1, ns)).map(String.init) }
+        s = sub(s, "(\\d)\\s*percent(?![\\p{L}])", "$1%")
+        s = sub(s, "(\\d[\\d,.]*)\\s+dollars?(?![\\p{L}])", "$$$1")
+        return s
+    }
+
+    // MARK: lists: "first X, second Y" / "number one ... number two" / "One, X. Two, Y." -> a numbered list
+    static func lists(_ text: String) -> String {
+        let ordinals = ["first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6], cardinals = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6]
+        guard let re = rx("(^|[.!?:;,]\\s*|\\n|\\s+)(?:(first|second|third|fourth|fifth|sixth)(?:ly)?|number (one|two|three|four|five|six)|(one|two|three|four|five|six)(?=[,:]))(?![\\p{L}])[,:]?\\s*") else { return text }
+        let ns = text as NSString
+        let skip: Set<String> = ["the", "a", "an", "every", "each", "per", "this", "that", "my", "your", "his", "her", "their", "our", "in", "for", "at", "one", "of", "than", "every", "next"]
+        var chain: [NSTextCheckingResult] = [], expect = 1
+        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            let lead = group(m, 1, ns), ord = group(m, 2, ns).lowercased(), numw = group(m, 3, ns).lowercased(), bare = group(m, 4, ns).lowercased()
+            let n = ordinals[ord] ?? cardinals[numw] ?? cardinals[bare] ?? 0
+            guard n == expect else { continue }
+            let boundary = lead.isEmpty || lead.contains(where: { ".!?:;,\n".contains($0) })
+            let prevWord = ns.substring(to: m.range.location).split(separator: " ").last.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+            if !bare.isEmpty && !(lead.isEmpty || lead.contains(where: { ".!?\n".contains($0) })) { continue }
+            if n == 1 && !boundary { continue }
+            if n > 1 && !boundary && skip.contains(prevWord) { continue }
+            chain.append(m); expect += 1
+        }
+        guard chain.count >= 2 else { return text }
+        var items: [String] = []
+        for (i, m) in chain.enumerated() {
+            let start = m.range.location + m.range.length, end = i + 1 < chain.count ? chain[i + 1].range.location : ns.length
+            var item = ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if i + 1 < chain.count { item = sub(item, "[\\s,;.]+$", ""); item = sub(item, "\\s+(?:and|then|next)$", ""); item = sub(item, "[\\s,;.]+$", "") }
+            if item.isEmpty { return text }
+            items.append(item.prefix(1).uppercased() + item.dropFirst())
+        }
+        var pre = ns.substring(to: chain[0].range.location + chain[0].range(at: 1).length).trimmingCharacters(in: .whitespacesAndNewlines)
+        pre = sub(pre, "[,;.]+$", "")
+        let lines = items.enumerated().map { "\($0.offset + 1). \($0.element)" }
+        return (pre.isEmpty ? "" : pre + (pre.hasSuffix(":") ? "" : ":") + "\n") + lines.joined(separator: "\n")
+    }
+
+    // MARK: vocabulary
+    static func distance(_ a: String, _ b: String) -> Int {
+        let x = Array(a), y = Array(b)
+        if x.isEmpty { return y.count }; if y.isEmpty { return x.count }
+        var row = Array(0...y.count)
+        for (i, c) in x.enumerated() {
+            var next = [i + 1]
+            for (j, d) in y.enumerated() { next.append(min(next[j] + 1, row[j + 1] + 1, row[j] + (c == d ? 0 : 1))) }
+            row = next
+        }
+        return row[y.count]
+    }
+    static func squash(_ s: String) -> String { String(s.lowercased().filter { $0.isLetter || $0.isNumber }) }
+    // terms: the user's own words and the brand words (spelling and case are fixed everywhere); soft: app and contact names (only mis-hearings that are no real word are fixed).
+    // apple: Apple's own text of the same speech; a term that Apple heard and the other engine did not is trusted with a looser match.
+    static func vocab(_ text: String, terms: [String], soft: [String] = [], isWord: (String) -> Bool = { _ in false }, apple: String? = nil) -> String {
+        guard !terms.isEmpty || !soft.isEmpty, let re = rx("\\p{L}[\\p{L}\\p{N}'’]*", []) else { return text }
+        let ns = text as NSString, toks = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !toks.isEmpty else { return text }
+        struct Term { let shown: String, key: String, exact: Bool, heard: Bool }
+        let appleLower = apple?.lowercased() ?? ""
+        func inApple(_ t: String) -> Bool { !appleLower.isEmpty && appleLower.range(of: "(?<![\\p{L}])" + NSRegularExpression.escapedPattern(for: t.lowercased()) + "(?![\\p{L}])", options: .regularExpression) != nil }
+        var list: [Term] = [], seen = Set<String>()
+        for (group, exact) in [(terms, true), (soft, false)] { for t in group { let k = squash(t); if k.count >= 3, seen.insert(k).inserted { list.append(Term(shown: t, key: k, exact: exact, heard: inApple(t))) } } }
+        var edits: [(NSRange, String)] = [], i = 0
+        while i < toks.count {
+            var done = false
+            for n in stride(from: min(3, toks.count - i), through: 1, by: -1) {
+                let span = NSRange(location: toks[i].range.location, length: toks[i + n - 1].range.location + toks[i + n - 1].range.length - toks[i].range.location)
+                let shown = ns.substring(with: span)
+                if n > 1 && shown.contains(where: { ",.;:!?\n".contains($0) }) { continue }
+                let cand = squash(shown)
+                if cand.count < 3 || hinglish.contains(cand) { continue }
+                var best: (term: Term, d: Int)?
+                for t in list {
+                    if cand == t.key { best = (t, 0); break }
+                    guard cand.first == t.key.first, abs(cand.count - t.key.count) <= 2 else { continue }
+                    var tol = t.key.count >= 9 ? 2 : t.key.count >= 5 ? 1 : 0
+                    let trusted = t.heard && !appleLower.contains(shown.lowercased())
+                    if trusted { tol += 2 }
+                    let d = distance(cand, t.key)
+                    guard d >= 1, d <= tol, cand.count >= 4 else { continue }
+                    if !trusted && isWord(n == 1 ? shown : cand) { continue }
+                    if best == nil || d < best!.d { best = (t, d) }
+                }
+                if let b = best {
+                    if (b.term.exact || b.d > 0) && shown != b.term.shown { edits.append((span, b.term.shown)) }
+                    i += n; done = true; break
+                }
+            }
+            if !done { i += 1 }
+        }
+        let out = NSMutableString(string: text)
+        for (r, v) in edits.reversed() { out.replaceCharacters(in: r, with: v) }
+        return out as String
+    }
+
+    // Words that carry on from what is already in the field: a space after a word, no capital in the middle of a sentence.
+    static func continuing(_ text: String, after before: String, style: Style = .formal) -> String {
+        guard style != .verbatim, !text.isEmpty, let last = before.last else { return text }
+        var s = text
+        if !last.isWhitespace, !"([{\"'“‘/-".contains(last), let f = s.first, f.isLetter || f.isNumber || "([\"“".contains(f) { s = " " + s }
+        if (last.isLetter || last.isNumber || last == "," || last == ";"), let i = s.firstIndex(where: { $0.isLetter }), s[..<i].allSatisfy({ $0 == " " }) {
+            let word = s[i...].prefix(while: { $0.isLetter || $0 == "'" || $0 == "’" })
+            if word.count > 1, word.dropFirst().allSatisfy({ $0.isLowercase }), word.lowercased() != "i", !word.lowercased().hasPrefix("i'") { s.replaceSubrange(i...i, with: s[i].lowercased()) }
+        }
+        return s
+    }
+
+    // MARK: capitals and sentence ends
+    static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "vs", "dr", "mr", "mrs", "ms", "approx", "no", "st", "inc", "co", "ltd", "jr", "sr"]
+    static func finish(_ text: String, style: Style) -> String {
+        var s = text
+        s = sub(s, "[ \\t]+", " ", [])
+        s = sub(s, " *\\n *", "\n", [])
+        s = sub(s, "\\s+([,.!?;:])", "$1", [])
+        s = sub(s, "([,;!?])(?=\\p{L})", "$1 ", [])
+        s = sub(s, "\\bi\\b(?!\\.e)", "I")
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let f = s.first, f.isLowercase { s = f.uppercased() + s.dropFirst() }
+        s = each(s, "([.!?]\\s+|\\n+)(\\p{Ll})", []) { m, ns in
+            let lead = group(m, 1, ns)
+            if lead.hasPrefix(".") || lead.hasPrefix("!") || lead.hasPrefix("?") {
+                let word = ns.substring(to: m.range.location + 1).split(whereSeparator: { $0 == " " || $0 == "\n" }).last.map { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".!?")) } ?? ""
+                if abbreviations.contains(word) { return nil }
+            }
+            return lead + group(m, 2, ns).uppercased()
+        }
+        let words = s.split(whereSeparator: { $0.isWhitespace }).count
+        let lines = s.split(separator: "\n", omittingEmptySubsequences: false)
+        let isList = lines.count > 1 && lines.last.map { $0.range(of: "^\\d+\\. ", options: .regularExpression) != nil } == true
+        if style == .casual {
+            let single = !s.contains("\n") && s.dropLast().range(of: "[.!?]\\s", options: .regularExpression) == nil
+            if single && words <= 20 && s.hasSuffix(".") && !s.hasSuffix("..") { s = String(s.dropLast()) }   // "Sounds good" in a chat, not "Sounds good."
+        } else if words >= 4, !isList, let last = s.last, last.isLetter || last.isNumber || last == "\"" || last == ")" { s += "." }
+        return s
+    }
+}
+
+// One dictation's audio, transcribed while the user still talks: the recorder hands over each stretch up to a pause (at most ~10 s, so every piece fits the
+// fast 12 s window), a serial queue sends them to the warm server in order, and key-up only waits for the last piece. Any failure means the caller uses Apple's stitched
+// text, so a long take never loses words. Main thread only.
+final class WhisperTake {
+    private struct Job { let wav: String, seconds: Double, voiced: Bool, own: Bool }
+    private var jobs: [Job] = [], texts: [String] = [], running: Job?, failure: String?, done: ((Result<String, Error>) -> Void)?, dead = false
+    let lang: String, prompt: String, serverPath: String?, cliPath: String, model: String
+    init(lang: String, prompt: String, serverPath: String?, cliPath: String, model: String) { self.lang = lang; self.prompt = prompt; self.serverPath = serverPath; self.cliPath = cliPath; self.model = model }
+    var pieces: Int { texts.count + jobs.count + (running == nil ? 0 : 1) }
+    var failed: Bool { failure != nil }
+    // Seconds the last pieces may still take (what is queued plus what is running).
+    var remaining: Double { (jobs + (running.map { [$0] } ?? [])).filter(\.voiced).reduce(0) { $0 + WhisperDictation.timeout(audioSeconds: $1.seconds) } }
+    func add(wav: String, seconds: Double, voiced: Bool, own: Bool = true) {
+        guard !dead else { if own { try? FileManager.default.removeItem(atPath: wav) }; return }
+        jobs.append(Job(wav: wav, seconds: seconds, voiced: voiced, own: own)); pump()
+    }
+    // After the tail is added: the answer once every piece is in (or the first failure).
+    func finish(_ done: @escaping (Result<String, Error>) -> Void) { self.done = done; pump() }
+    func abort() {
+        guard !dead else { return }
+        dead = true; done = nil
+        for j in jobs where j.own { try? FileManager.default.removeItem(atPath: j.wav) }
+        jobs = []
+        if running != nil { WhisperRunner.shared.abort() }
+    }
+    private func conclude(_ r: Result<String, Error>) { let d = done; done = nil; d?(r) }
+    private func pump() {
+        guard !dead, running == nil else { return }
+        if let f = failure { if done != nil { conclude(.failure(WhisperError(errorDescription: f))) }; return }
+        guard !jobs.isEmpty else { if done != nil { conclude(.success(Self.join(texts))) }; return }
+        let j = jobs.removeFirst()
+        guard j.voiced else { if j.own { try? FileManager.default.removeItem(atPath: j.wav) }; texts.append(""); return pump() }   // a stretch of silence: nothing to hear, and nothing for Whisper to invent
+        running = j
+        WhisperRunner.shared.transcribe(wav: j.wav, lang: lang, prompt: Self.context(prompt, texts), serverPath: serverPath, cliPath: cliPath, model: model,
+                                        within: WhisperDictation.timeout(audioSeconds: j.seconds), audioSeconds: j.seconds) { [weak self] r in
+            guard let self, !dead else { return }
+            running = nil
+            if j.own { try? FileManager.default.removeItem(atPath: j.wav) }
+            switch r {
+            case .success(let t): texts.append(WhisperDictation.clean(t))
+            case .failure(let e): failure = e.localizedDescription
+            }
+            pump()
+        }
+    }
+    // The vocabulary first, then the end of what was already said (Whisper weighs the end of its prompt most), so a piece carries on in the same style.
+    static func context(_ vocab: String, _ done: [String]) -> String {
+        let said = done.last(where: { !$0.isEmpty }) ?? ""
+        let tail = said.count > 140 ? String(said.suffix(140)).split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).last.map(String.init) ?? "" : said
+        return [vocab, tail].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+    // Pieces were cut at pauses, so one may end mid-sentence ("... and." + "Bought milk."): a full stop after a dangling word goes, and the next piece carries on in lower case.
+    static let dangling: Set<String> = ["and", "but", "or", "so", "the", "a", "an", "to", "of", "in", "on", "at", "for", "with", "that", "because", "if", "as", "my", "our", "your", "is", "are", "was", "then", "from", "by", "than"]
+    static let lowerStarts: Set<String> = ["the", "a", "an", "to", "of", "in", "on", "at", "for", "with", "and", "but", "or", "so", "we", "he", "she", "they", "it", "you", "that", "this", "then", "my", "our", "your", "is", "are", "was", "will", "would", "can", "could", "should", "because", "if", "as", "from", "by", "than", "which", "who", "when", "where", "how", "what"]
+    static func join(_ parts: [String]) -> String {
+        var out = ""
+        for p in parts.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !p.isEmpty {
+            var next = p
+            if let last = out.split(separator: " ").last {
+                let word = last.lowercased().trimmingCharacters(in: .punctuationCharacters)
+                if dangling.contains(word), let c = out.last, ".…".contains(c) {
+                    out = out.replacingOccurrences(of: "[.…]+$", with: "", options: .regularExpression)
+                    let first = p.split(separator: " ").first.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+                    if lowerStarts.contains(first), let f = next.first, f.isUppercase { next = f.lowercased() + next.dropFirst() }
+                }
+            }
+            out += (out.isEmpty ? "" : " ") + next
+        }
+        return out
+    }
+}
+
+// An optional free polish by the small local model that already serves Zuka's chat (Ollama on 127.0.0.1). Used only when it is already running, never started
+// for dictation; grammar and spelling only, with a hard time budget, and its answer is thrown away unless it kept the meaning.
+enum LocalPolish {
+    static let model = "qwen2.5:3b"
+    static var base: String { ProcessInfo.processInfo.environment["ZUKA_CHAT_URL"] ?? "http://127.0.0.1:" + (ProcessInfo.processInfo.environment["ZUKA_LLM_PORT"] ?? "11435") }
+    static func eligible(_ text: String) -> Bool {
+        let n = text.split(whereSeparator: { $0.isWhitespace }).count
+        return n >= 12 && n <= 80 && !text.contains("\n") && !DictationTidy.isHinglish(text) && text.unicodeScalars.allSatisfy { $0.value < 0x250 || $0.value >= 0x2000 }
+    }
+    static func words(_ s: String) -> [String] { s.lowercased().split(whereSeparator: { !($0.isLetter || $0.isNumber) }).map(String.init) }
+    // The answer must be the same words: at least 85% of them shared, similar length, and no number added, dropped or changed.
+    static func keepsMeaning(_ original: String, _ candidate: String) -> Bool {
+        let a = words(original), b = words(candidate)
+        guard !a.isEmpty, !b.isEmpty, Double(b.count) >= 0.8 * Double(a.count), Double(b.count) <= 1.25 * Double(a.count) else { return false }
+        var pool = Dictionary(grouping: b, by: { $0 }).mapValues(\.count), shared = 0
+        for w in a { if let c = pool[w], c > 0 { pool[w] = c - 1; shared += 1 } }
+        guard Double(shared) / Double(max(a.count, b.count)) >= 0.85 else { return false }
+        return Set(a.filter { $0.first?.isNumber == true }) == Set(b.filter { $0.first?.isNumber == true })
+    }
+    static func polish(_ text: String, budget: Double = 1.2, done: @escaping (String?) -> Void) {
+        guard eligible(text), let url = URL(string: base + "/api/chat") else { return done(nil) }
+        let system = "You fix only grammar, spelling and capitalisation in dictated text. Never reword, reorder, add or remove words or ideas, keep every number and name. Reply with the corrected text only."
+        let body: [String: Any] = ["model": model, "stream": false, "messages": [["role": "system", "content": system], ["role": "user", "content": text]],
+                                   "options": ["temperature": 0, "num_predict": max(64, text.count / 2), "num_ctx": 1024]]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return done(nil) }
+        var req = URLRequest(url: url); req.httpMethod = "POST"; req.httpBody = data; req.timeoutInterval = budget
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var finished = false
+        let finish: (String?) -> Void = { r in DispatchQueue.main.async { if !finished { finished = true; done(r) } } }
+        let task = URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let m = j["message"] as? [String: Any],
+                  let out = (m["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\"")), !out.isEmpty,
+                  keepsMeaning(text, out) else { return finish(nil) }
+            finish(out)
+        }
+        task.resume()
+        DispatchQueue.main.asyncAfter(deadline: .now() + budget) { task.cancel(); finish(nil) }
     }
 }
 // MARK: whisper dictation end
@@ -482,7 +996,7 @@ enum Prefs {
         "selection": true, "ahead": true, "aheadDelay": 0.45, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
-        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateEngine": "whisper", "dictateLang": "auto", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
+        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateEngine": "best", "dictateLang": "auto", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
         "assistantName": "Zuka", "userCallName": "J", "echoCancel": false, "wakeWord": false, "converse": true]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
@@ -1154,7 +1668,7 @@ struct TextSelection {
             for e in [down, up] { e.flags = draft.isEmpty ? [] : .maskCommand; if NSApp.keyWindow == nil { e.post(tap: .cghidEventTap) } else { e.postToPid(app.processIdentifier) } }
             // Posted after every check passed: it went in. Web and Electron fields often read back empty or stale, so the
             // read-back only decides when the clipboard can come back, never whether the paste failed.
-            confirm(until: Date().addingTimeInterval(0.45)) { _ in finish(true) }
+            confirm(until: Date().addingTimeInterval(0.45 + min(3, Double(draft.count) / 4000))) { _ in finish(true) }   // a long paste in a slow app: the clipboard waits
         }
         let fallback = {
             if preserveFocus { paste() }
@@ -2161,7 +2675,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // Dictation drops fastResults / frequentFinalization (Apple: faster but less accurate); asks keep them for live commands.
     func speechModule(dictate: Bool = false) -> any SpeechModule {
         let en = Locale(identifier: "en-US"), locale = en   // SpeechTranscriber rejects the Mac locale ("unsupported locale") even when SFSpeechRecognizer lists it: every voice ask died (1.5.0)
-        if Prefs.str("speechModel") == "dictation" {
+        if Prefs.str("speechModel") == "dictation" || dictate && dictationReady {   // dictation uses Apple's on-device dictation model when installed: it punctuates
             return dictate ? DictationTranscriber(locale: en, contentHints: [.shortForm], transcriptionOptions: [.punctuation], reportingOptions: [.volatileResults], attributeOptions: [])
                 : DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         }
@@ -2171,14 +2685,16 @@ final class App: NSObject, WKScriptMessageHandler {
     func prepareSpeech() {   // make sure the speech model is installed, and learn its audio format
         guard !preparingSpeech else { return }
         preparingSpeech = true
-        let m = speechModule()
+        let m = speechModule(), d = DictationTranscriber(locale: Locale(identifier: "en-US"), contentHints: [.shortForm], transcriptionOptions: [.punctuation], reportingOptions: [.volatileResults], attributeOptions: [])
         Task { [weak self] in
             if let r = try? await AssetInventory.assetInstallationRequest(supporting: [m]) { try? await r.downloadAndInstall() }
+            if let r = try? await AssetInventory.assetInstallationRequest(supporting: [d]) { try? await r.downloadAndInstall() }
             let f = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m])
-            await MainActor.run { self?.speechFormat = f; self?.preparingSpeech = false }
+            let ready = await DictationTranscriber.installedLocales.contains { $0.identifier(.bcp47) == "en-US" }
+            await MainActor.run { self?.speechFormat = f; self?.dictationReady = ready; self?.preparingSpeech = false }
         }
     }
-    var text = "", answer = "", busy = false, speechFailed = false, gen = 0
+    var text = "", answer = "", busy = false, speechFailed = false, gen = 0, dictationReady = false
     var agentCard = ""   // the hand-off or done card on screen: Esc picks its quiet choice
     var replyAgent = ""   // the agent whose done card was up when this ask began: talking clears the card, so it is kept here
     var showAgent = ""   // the task this ask showed (--agent-show): its work comes up when the ask ends
@@ -2960,12 +3476,17 @@ final class App: NSObject, WKScriptMessageHandler {
             dictationAppName = dictationTargetApp?.localizedName ?? "App"
             dictateID += 1; dictateSelection = nil; dictateBefore = ""; dictateSelectionRetried = false
         }
-        let id = dictateID, front = dictationTargetApp, cleanup = dictateCleanup
+        let id = dictateID, front = dictationTargetApp, cleanup = dictateTidy || dictateCleanup
         dictateSelectionPending = true
         DispatchQueue.global().async { [weak self] in
             var secureField = false
             let selected = TextSelection.capture(front, enabled: true, allowEmpty: true, keyboardFallback: !retry, onSecure: { secureField = true })   // the retry only counts a real text box
-            // Clean up reads the text before the cursor for names and terms.
+            // Clean up reads the text before the cursor (names and terms, and whether the words continue a sentence); a browser's window title says which site (chat or mail).
+            let title = front.flatMap { app -> String? in
+                let el = AXUIElementCreateApplication(app.processIdentifier); AXUIElementSetMessagingTimeout(el, 0.15)
+                return axAttribute(el, kAXFocusedWindowAttribute).flatMap { axAttribute($0 as! AXUIElement, kAXTitleAttribute) as? String }
+            } ?? ""
+            let style = DictationTidy.style(bundle: front?.bundleIdentifier, title: title)
             let before = selected.flatMap { s -> String? in
                 guard cleanup, let value = s.value as NSString?, let r = s.range, r.location >= 0, r.location <= value.length else { return nil }
                 return String(value.substring(to: r.location).suffix(600))
@@ -2976,6 +3497,7 @@ final class App: NSObject, WKScriptMessageHandler {
                     hush(); js("dictated", ["text": "Dictation is off in secure fields", "ok": false]); hide(after: 3); return
                 }
                 dictateSelectionPending = false
+                if !retry { dictateStyle = style }
                 guard let selected else {   // no text field: the words still go to History ("Nothing selected to insert")
                     if AXIsProcessTrusted() {
                         if retry { finishDictation() }
@@ -3044,34 +3566,60 @@ final class App: NSObject, WKScriptMessageHandler {
     func startDictation() { start(dictate: true) }
     func whisperDiscard() {
         whisperRecorder?.discard(); whisperRecorder = nil; whisperDelivered = true
+        whisperTake?.abort(); whisperTake = nil
         WhisperRunner.shared.abort()
     }
 
-    // Release with Whisper on: the recording goes to whisper-server (else whisper-cli); Apple's live text is the fallback on any error or a slow answer.
+    // Release with Whisper on: every finished stretch of the take is already with the server (WhisperTake), so only the last one is waited for. Apple's text is the safety net:
+    // any failure, a slow answer, or an answer that is empty or garbled puts Apple's text in instead, so no words are lost.
     func whisperTranscribe(apple source: String) {
-        guard let rec = whisperRecorder, let audio = rec.finish() else {
-            NSLog("Whisper: no recording, inserting the Apple text"); dictateFellBack = true; whisperDiscard(); return insertDictation(source)
+        guard let rec = whisperRecorder, let audio = rec.finish(), let take = whisperTake else {
+            NSLog("Whisper: no recording, inserting the Apple text"); dictateFellBack = true; whisperDiscard(); return finalizeDictation(source, apple: nil)
         }
-        whisperRecorder = nil; whisperDelivered = false
-        let id = dictateID, limit = WhisperDictation.timeout(audioSeconds: audio.seconds)
-        let prompt = WhisperDictation.prompt(words: DictationData.words + [Prefs.assistantName]), lang = WhisperDictation.language(Prefs.str("dictateLang"))
-        guard let cli = WhisperDictation.tool("whisper-cli") else {
-            try? FileManager.default.removeItem(atPath: audio.path); NSLog("Whisper: whisper-cli is gone, inserting the Apple text")
-            whisperDelivered = true; dictateFellBack = true; return insertDictation(source)
-        }
+        whisperRecorder = nil; whisperTake = nil; whisperDelivered = false
+        let id = dictateID
+        if let t = rec.tail { take.add(wav: t.path, seconds: t.seconds, voiced: t.voiced, own: t.path != audio.path) }
+        let tailShort = WhisperDictation.isShort(audioSeconds: rec.tail?.seconds ?? audio.seconds)
+        var limit = take.remaining + 1.5
+        if dictateMerge, !WhisperRunner.shared.ready(short: tailShort) { limit = min(limit, 3.5) }   // a cold server is not worth waiting for when Apple's text is in hand
         let deliver: (Result<String, Error>?) -> Void = { [weak self] result in
             guard let self, dictateID == id, !whisperDelivered else { return }
             whisperDelivered = true
             try? FileManager.default.removeItem(atPath: audio.path)
-            let r = WhisperDictation.resolve(result, apple: source)
+            var r = WhisperDictation.resolve(result, apple: source)
+            if r.why == nil, dictateMerge, WhisperDictation.garbled(r.text, apple: source) { r = (source, true, "the text looked wrong") }
             if let why = r.why { NSLog("Whisper: %@ (%.1f s of audio, limit %.1f s); inserting the Apple text", why, audio.seconds, limit); dictateFellBack = true; dictateTimedOut = result == nil }
             else { NSLog("Whisper dictation: %.2f s after key-up for %.1f s of audio", Date().timeIntervalSince(dictateReleased), audio.seconds) }
-            if result == nil { WhisperRunner.shared.abort() }
-            insertDictation(r.text)
+            if result == nil { take.abort(); WhisperRunner.shared.abort() }
+            finalizeDictation(r.text, apple: dictateMerge && !r.fellBack ? source : nil)
         }
-        WhisperRunner.shared.transcribe(wav: audio.path, lang: lang, prompt: prompt, serverPath: WhisperDictation.tool("whisper-server"), cliPath: cli,
-                                        model: WhisperDictation.modelPath, within: limit, audioSeconds: audio.seconds) { deliver($0) }
+        take.finish { deliver($0) }
         DispatchQueue.main.asyncAfter(deadline: .now() + limit) { deliver(nil) }
+    }
+
+    // The user's own words and brand words (spelling is fixed everywhere), and app and shortcut names (only fixed when what was heard is no real word).
+    func dictationVocabulary() -> (terms: [String], soft: [String]) {
+        let terms = DictationData.words + WhisperDictation.brandWords + [Prefs.assistantName]
+        let have = Set(terms.map { $0.lowercased() })
+        return (terms, hints.filter { !have.contains($0.lowercased()) })
+    }
+    // The free cleanup, then (when the local model is already up) a short grammar pass, then the words go in. The pill shows the finished text the moment it is known.
+    func finalizeDictation(_ heard: String, apple: String?) {
+        guard dictateTidy else { whisperDiscard(); return insertDictation(heard) }
+        let id = dictateID, style = dictateStyle, (terms, soft) = dictationVocabulary()
+        var text = DictationTidy.tidy(heard, style: style, terms: terms, soft: soft, isWord: DictationData.known, apple: apple)
+        text = DictationData.fixed(text)
+        text = DictationTidy.continuing(text, after: dictateBefore, style: style)
+        let land: (String) -> Void = { [weak self] value in
+            guard let self, dictateID == id, dictating else { return }
+            guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {   // nothing left ("um", or "scratch that" on its own)
+                busy = false; dictating = false; dictateSelection = nil; cue("soundStop"); hide(after: 0.2); return
+            }
+            js("final", value)
+            insertDictation(value, tidied: true)
+        }
+        guard style != .verbatim, LocalPolish.eligible(text) else { return land(text) }
+        LocalPolish.polish(text) { polished in land(polished.map { DictationTidy.continuing($0, after: self.dictateBefore, style: style) } ?? text) }
     }
 
     func beginSpeechSegment(_ base: String, listeningID: Int) -> (feed: AsyncStream<AnalyzerInput>.Continuation, inputID: UUID, analyzer: SpeechAnalyzer, reading: Task<Void, Never>, segment: Int) {
@@ -3156,17 +3704,18 @@ final class App: NSObject, WKScriptMessageHandler {
         }
         cancelFast(); noteHidden()
         if dictate {
-            dictateWhisper = WhisperDictation.active(pref: Prefs.str("dictateEngine"))
-            dictateCleanup = !dictateWhisper && Prefs.str("dictateMode") == "cleanup" && !Prefs.bool("usageCheck")   // Zuka: with the usage check on, dictation never calls Claude; Whisper dictation never does
+            let enginePref = Prefs.str("dictateEngine")
+            dictateWhisper = WhisperDictation.active(pref: enginePref) && enginePref != "apple"
+            dictateMerge = dictateWhisper && WhisperDictation.merges(pref: enginePref)
+            dictateTidy = Prefs.str("dictateMode") != "verbatim"   // the free cleanup (DictationTidy, an optional local model): dictation never calls Claude any more
+            dictateCleanup = false
+            dictateStyle = DictationTidy.style(bundle: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
             dictateFellBack = false; dictateTimedOut = false
             whisperDiscard()
             captureDictationSelection(); replacement = nil
             if dictateCleanup { warmDictationCleanup() }
-            if dictateWhisper {   // the model loads while J speaks; a take still going after 8 s is a long one, so the full-window server starts too
+            if dictateWhisper {   // key-down: the fast server starts (or is touched, so it stays warm) while J speaks; the pieces of a long take all fit its window
                 WhisperRunner.shared.warm(serverPath: WhisperDictation.tool("whisper-server"), model: WhisperDictation.modelPath)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-                    if let self, dictating, dictateWhisper { WhisperRunner.shared.warm(serverPath: WhisperDictation.tool("whisper-server"), model: WhisperDictation.modelPath, short: false) }
-                }
             }
         } else if replying { offerText = text } else { captureSelection(); replacement = nil }
         if !dictate && !drawingReply { targetScreen = currentRequestScreen(panel) }   // a guide may have moved the box to another display
@@ -3217,7 +3766,13 @@ final class App: NSObject, WKScriptMessageHandler {
             WhisperRecorder.sweep(keeping: nil)
             rec = WhisperRecorder(path: NSTemporaryDirectory() + "wavelength-dictation-\(UUID().uuidString).wav")
             whisperRecorder = rec
-            if rec == nil { NSLog("Whisper: could not open a recording file, using Apple speech for this dictation"); dictateWhisper = false }
+            if rec == nil { NSLog("Whisper: could not open a recording file, using Apple speech for this dictation"); dictateWhisper = false; dictateMerge = false }
+            else if let rec, let cli = WhisperDictation.tool("whisper-cli") {   // finished stretches (cut at pauses) are transcribed while J is still talking
+                let take = WhisperTake(lang: WhisperDictation.language(Prefs.str("dictateLang")), prompt: WhisperDictation.prompt(words: DictationData.words + [Prefs.assistantName]),
+                                       serverPath: WhisperDictation.tool("whisper-server"), cliPath: cli, model: WhisperDictation.modelPath)
+                whisperTake = take
+                rec.onChunk = { wav, seconds, voiced in DispatchQueue.main.async { take.add(wav: wav, seconds: seconds, voiced: voiced) } }
+            }
         }
         let onBuffer: (AVAudioPCMBuffer) -> Void = { [weak self] buf in
             if buf.format != want, convFrom != buf.format { conv = AVAudioConverter(from: buf.format, to: want); convFrom = buf.format }
@@ -3258,7 +3813,7 @@ final class App: NSObject, WKScriptMessageHandler {
     func heard(_ now: String) {
         guard engine.isRunning || busy else { return }
         text = now
-        if dictating { scheduleDictateAhead(); return }   // cleanup starts on a pause; the pill still shows only the wave
+        if dictating { scheduleDictateAhead(); showLive(now); return }   // the pill shows the newest words next to its wave
         if offerText != nil {
             js(drawingReply ? "words" : "draft", now)
             if clickTalk { quiet?.cancel(); let q = DispatchWorkItem { [weak self] in self?.stop() }; quiet = q; DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: q) }
@@ -3282,6 +3837,20 @@ final class App: NSObject, WKScriptMessageHandler {
         let go = DispatchWorkItem { [weak self] in self?.startAhead() }
         aheadItem = go
         DispatchQueue.main.asyncAfter(deadline: .now() + Prefs.num("aheadDelay"), execute: go)
+    }
+
+    // Apple's partial words, a few times a second: one to three lines beside the wave, the newest at the bottom.
+    func showLive(_ s: String) {
+        liveText = s
+        guard liveItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            liveItem = nil
+            guard dictating, engine.isRunning || busy else { return }
+            js("live", String(liveText.suffix(260)))
+        }
+        liveItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
     }
 
     func scheduleDictateAhead() {
@@ -3407,6 +3976,7 @@ final class App: NSObject, WKScriptMessageHandler {
 
     var correctionTimer: Timer?, learnedWord: String?, dictationAppName = "App", dictateSeconds = 0.0, lastDictation: String?
     var dictateFellBack = false, dictateTimedOut = false
+    var whisperTake: WhisperTake?, dictateMerge = false, dictateTidy = true, dictateStyle = DictationTidy.Style.formal, liveText = "", liveItem: DispatchWorkItem?   // Whisper pieces sent while talking; Best = merge with Apple; free cleanup on; the app's tone; the pill's live words
     var dictateWhisper = false, whisperRecorder: WhisperRecorder?, whisperDelivered = true   // Whisper dictation: engine for this dictation, its recording, and whether the answer (or the fallback) already went in
     @discardableResult func saveDictation(_ value: String, appName: String) -> Bool {
         let saved = DictationData.record(value, raw: text.trimmingCharacters(in: .whitespacesAndNewlines), app: appName, seconds: dictateSeconds > 0 ? dictateSeconds : Date().timeIntervalSince(began))
@@ -3506,7 +4076,7 @@ final class App: NSObject, WKScriptMessageHandler {
             e.flags = .maskCommand
             if NSApp.keyWindow == nil || front == nil || front == .current { e.post(tap: .cghidEventTap) } else { e.postToPid(front!.processIdentifier) }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { restore(); Hands.unlock(clipboard) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5 + min(3, Double(value.count) / 4000)) { restore(); Hands.unlock(clipboard) }
     }
 
     func stopDictationCleanup() {
@@ -3614,7 +4184,7 @@ final class App: NSObject, WKScriptMessageHandler {
             return
         }
         if dictateWhisper, whisperDelivered { return whisperTranscribe(apple: source) }
-        if !dictateCleanup { whisperDiscard(); return insertDictation(source) }
+        if !dictateCleanup { whisperDiscard(); return finalizeDictation(source, apple: nil) }
         let early = dictateRun?.key == Self.dictationKey(source)
         if !early { dictateRun?.process.terminate(); dictateRun = sendDictationCleanup(source) }
         stopDictationWorker()
@@ -3639,9 +4209,9 @@ final class App: NSObject, WKScriptMessageHandler {
     }
 
     func recordDictationEvent(_ insert: String) {
-        telemetry(["dictation", dictateCleanup ? "cleanup" : "verbatim",
+        telemetry(["dictation", dictateTidy ? "cleanup" : "verbatim",
                    String(max(0, Date().timeIntervalSince(dictateReleased))),
-                   dictateCleanup && !dictateFellBack ? "1" : "0",
+                   dictateTidy && !dictateFellBack ? "1" : "0",
                    dictateFellBack ? "1" : "0", dictateTimedOut ? "1" : "0", insert])
     }
 
@@ -3658,8 +4228,9 @@ final class App: NSObject, WKScriptMessageHandler {
         js("dictated", ["text": failed + (paste.isEmpty ? " Saved to History." : paste), "ok": false, "history": true]); hide(after: 6)
     }
 
-    func insertDictation(_ heard: String) {
-        let value = DictationData.fixed(heard)
+    func insertDictation(_ heard: String, tidied: Bool = false) {
+        let value = tidied ? heard : DictationData.fixed(heard)
+        lastDictation = value   // ⌃⌘V always has the latest words, even when this delivery fails
         guard let target = dictateSelection else {
             dictationDeliveryFailed(value); return
         }
@@ -3672,7 +4243,8 @@ final class App: NSObject, WKScriptMessageHandler {
             if !ok { dictationDeliveryFailed(value); return }
             recordDictationEvent("ok")
             busy = false; dictating = false; dictateSelection = nil
-            cue("soundDone"); js("dictated", ["text": "", "ok": true]); hide(after: 0.8); inserted()
+            cue("soundDone"); js("dictated", ["text": "", "ok": true])
+            hide(after: tidied ? min(3, 0.8 + Double(value.split(separator: " ").count) / 14) : 0.8); inserted()   // the finished words stay beside the check for a moment
         }
     }
 
