@@ -1014,7 +1014,7 @@ enum Prefs {
         "selection": true, "ahead": true, "aheadDelay": 0.45, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
         "speak": false, "greet": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "stats": true, "tips": true, "support": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "speechModel": "speech", "improve": false, "improveAsked": false, "draftInsert": "ask",
-        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateEngine": "best", "dictateLang": "auto", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
+        "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateEngine": "best", "dictateLang": "auto", "dictateHistory": true, "dictateStream": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420,
         "assistantName": "Zuka", "userCallName": "J", "echoCancel": false, "wakeWord": false, "converse": true]   // what the assistant is called and what it calls you: read at runtime, so one build serves everyone
     static let retiredKeys = ["autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
         "instant", "live", "ahead", "aheadDelay", "learn", "selection", "guideSteps", "workIn", "openOn", "miniScreen", "draftInsert",
@@ -1462,6 +1462,117 @@ func transcriptKey(_ s: String) -> String {
     s.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " .,!?:;"))
 }
 
+// Live typing (Settings → Dictation → "Type words as I speak"): while the key is held the words appear in the focused field, one stable word behind Apple's volatile one.
+// liveDiff: what turns `typed` into `want`: the common prefix (by Characters) stays, the rest is backspaced, the new tail typed.
+func liveDiff(_ typed: String, _ want: String) -> (back: Int, add: String) {
+    let a = Array(typed), b = Array(want)
+    var i = 0; while i < a.count, i < b.count, a[i] == b[i] { i += 1 }
+    return (a.count - i, String(b[i...]))
+}
+// The words to show now: all but the last of a partial transcript, with a space first when the cursor follows a non-space.
+func liveStable(_ transcript: String, before: String) -> String {
+    let words = transcript.split(whereSeparator: { $0.isWhitespace }).dropLast()
+    guard !words.isEmpty else { return "" }
+    return (before.last.map { !$0.isWhitespace } ?? false ? " " : "") + words.joined(separator: " ")
+}
+func liveChunks(_ s: String, limit: Int = 20) -> [[UInt16]] {   // UTF-16 units per key event, never splitting a character
+    var out: [[UInt16]] = [], cur: [UInt16] = []
+    for c in s { let u = Array(String(c).utf16); if !cur.isEmpty && cur.count + u.count > limit { out.append(cur); cur = [] }; cur += u }
+    return cur.isEmpty ? out : out + [cur]
+}
+final class LiveTyper {
+    static let mark: Int64 = 0x574C5459   // on every key event we post, so the click/key watch can tell them from the user's
+    let target: TextSelection, pid: pid_t, base: String?, start: Int?   // base/start: the field's text and the cursor at key-down, for read-back checks
+    var typed = "", halted = false, failed = false, posted = Date.distantPast, suspect: Date?, log: ((String) -> Void)?
+    let source = CGEventSource(stateID: .privateState)
+    init(_ t: TextSelection) { target = t; pid = t.app.processIdentifier; base = t.value; start = t.range.map { Int($0.location) } }
+    var live: Bool { !halted && !failed && !target.app.isTerminated }
+    private func expected(_ s: String) -> String? {
+        guard let base, let start, start >= 0, start <= (base as NSString).length else { return nil }
+        return (base as NSString).replacingCharacters(in: NSRange(location: start, length: 0), with: s)
+    }
+    // What is in the field now between the key-down text before and after the cursor (nil: unreadable or someone else changed it).
+    func actual() -> String? {
+        guard let base, let start, start >= 0, start <= (base as NSString).length, let now = target.value else { return nil }
+        let p = (base as NSString).substring(to: start), x = (base as NSString).substring(from: start)
+        let n = now as NSString, pl = (p as NSString).length, xl = (x as NSString).length
+        guard n.length >= pl + xl, now.hasPrefix(p), now.hasSuffix(x) else { return nil }
+        return n.substring(with: NSRange(location: pl, length: n.length - pl - xl))
+    }
+    // Fields fix what is typed (capital after a full stop, curly quotes), so "the same" ignores case, spaces and punctuation.
+    static func same(_ a: String?, _ b: String) -> Bool {
+        guard let a else { return false }
+        func k(_ s: String) -> String { String(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init)) }
+        return a == b || k(a) == k(b)
+    }
+    func intact() -> Bool? { base == nil || target.value == nil ? nil : Self.same(actual(), typed) }
+    private func key(_ code: CGKeyCode, _ units: [UInt16] = []) {
+        for down in [true, false] {
+            guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
+            e.flags = []; e.setIntegerValueField(.eventSourceUserData, value: Self.mark)
+            if !units.isEmpty { e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units) }
+            e.postToPid(pid)
+        }
+    }
+    // Turn what is typed into `want`. A long tail goes in one backspace over an AX selection when the field allows it.
+    private func retype(to want: String) {
+        let (back, add) = liveDiff(typed, want)
+        if back > 400, let start {
+            let keep = typed.prefix(typed.count - back), loc = start + (String(keep) as NSString).length, len = (typed as NSString).length - (String(keep) as NSString).length
+            var r = CFRange(location: loc, length: len)
+            if let v = AXValueCreate(.cfRange, &r), AXUIElementSetAttributeValue(target.element, kAXSelectedTextRangeAttribute as CFString, v) == .success { key(51) }
+            else { for _ in 0..<back { key(51) } }
+        } else { for _ in 0..<back { key(51) } }
+        for chunk in liveChunks(add) { key(0, chunk) }
+        typed = want; posted = Date(); suspect = nil; log?("typed \(typed)")
+    }
+    func update(_ want: String) {
+        guard live, want != typed else { return }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, !IsSecureEventInputEnabled() else { return halt() }
+        // Events dropped or the field changed under us: stop, take back what is there, let the final insert do it the normal way.
+        // Electron's AX text lags up to a second behind the keys: only a mismatch that outlasts a pause counts as dropped events.
+        if Date().timeIntervalSince(posted) > 0.7 {
+            if intact() == false {
+                if let since = suspect, Date().timeIntervalSince(since) > 0.5 { failed = true; log?("failed: field differs, has [\(actual() ?? "nil")] want [\(typed)]"); erase(); return }
+                if suspect == nil { suspect = Date() }
+            } else { suspect = nil }
+        }
+        retype(to: want)
+    }
+    // The user clicked, typed or switched app: the cursor may have moved, so only take the words back when they are provably where we left them.
+    func halt() { guard !halted else { return }; halted = true; log?("halted"); erase() }
+    func erase() {
+        guard !typed.isEmpty else { return }
+        let found = actual()
+        if halted || failed {
+            guard Self.same(found, typed) || failed && found != nil, let r = TextSelection.selectedRange(target.element), let start,
+                  r.length == 0 && r.location == start + (found! as NSString).length else { log?("left in place"); return }
+        }
+        if let found, found != typed { typed = found }   // what really landed, so a drop never deletes the user's own words
+        retype(to: ""); log?("erased")
+    }
+    func finish(_ final: String, valid: @escaping () -> Bool, done: @escaping (Bool) -> Void) {
+        guard live, valid() else { return done(false) }
+        let begin = Date()
+        func ready() {   // a lagging read-back gets 0.6 s to catch up before the typed words count as lost
+            if intact() != false { return go() }
+            guard Date().timeIntervalSince(begin) < 0.6, valid() else { failed = true; erase(); return done(false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { ready() }
+        }
+        func go() {
+        retype(to: final)
+        let deadline = Date().addingTimeInterval(1.5 + min(2, Double(final.count) / 800))
+        func check() {
+            if intact() != false { return done(true) }   // unreadable counts as landed: web fields often read back stale
+            guard Date() < deadline, valid() else { failed = true; erase(); return done(false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { check() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { check() }
+        }
+        ready()
+    }
+}
+
 func stitchTranscript(_ prefix: String, _ suffix: String) -> String {
     let a = prefix.split(whereSeparator: { $0.isWhitespace }), b = suffix.split(whereSeparator: { $0.isWhitespace })
     guard !a.isEmpty else { return suffix }
@@ -1507,8 +1618,9 @@ func py(_ args: [String], _ extra: [String: String] = [:]) -> Process {
     return p
 }
 
+var devTelemetryOff = false   // the dictate-test hook leaves no stats
 func telemetry(_ args: [String]) {
-    guard Prefs.bool("stats") else { return }
+    guard Prefs.bool("stats"), !devTelemetryOff else { return }
     let p = py(["--telemetry"] + args)
     p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
     try? p.run()   // its curl child outlives this helper; never wait on an ask
@@ -2733,6 +2845,7 @@ final class App: NSObject, WKScriptMessageHandler {
     var dictatePressed = Date.distantPast, dictateTap: DispatchWorkItem?   // dictateTap: a quick tap waiting to see if a second one locks
     var dictateSelection: TextSelection?, dictationTargetApp: NSRunningApplication?, dictateProcess: Process?, dictateInput: FileHandle?, dictateOutput: FileHandle?, dictateID = 0, dictateBefore = ""
     var dictateSelectionRetried = false
+    var liveTyper: LiveTyper?, liveMonitor: Any?, liveItem2: DispatchWorkItem?, liveWant = "", devTesting = false   // typing into the field while the key is held
     var askFile = ""   // safe mode: where the Allow / Don't Allow answer goes (atticus.py's gate waits on it)
     var askNeed: [String:Any] = [:]
     var agentMoveFile = "" { didSet { moveKey() } }   // set while atticus.py watches it: the running ask can move to an agent
@@ -3346,7 +3459,7 @@ final class App: NSObject, WKScriptMessageHandler {
         quietAudio.end()
         clickTalk = false; toggleTalk = false; quiet?.cancel(); stops += 1   // stops: a late "words landed" from this listen does nothing
         listenID += 1; selectionID += 1; selectionPending = false; replacing = false
-        dictating = false; dictateID += 1; dictateSelectionPending = false; dictateSelection = nil
+        endLive(erase: true); dictating = false; dictateID += 1; dictateSelectionPending = false; dictateSelection = nil
         stopDictationCleanup(); whisperDiscard()
         cancelFast()
         aheadItem?.cancel(); dropAhead()
@@ -3492,9 +3605,9 @@ final class App: NSObject, WKScriptMessageHandler {
             dictateSeconds = 0
             dictationTargetApp = NSWorkspace.shared.frontmostApplication
             dictationAppName = dictationTargetApp?.localizedName ?? "App"
-            dictateID += 1; dictateSelection = nil; dictateBefore = ""; dictateSelectionRetried = false
+            endLive(erase: true); dictateID += 1; dictateSelection = nil; dictateBefore = ""; dictateSelectionRetried = false
         }
-        let id = dictateID, front = dictationTargetApp, cleanup = dictateTidy || dictateCleanup
+        let id = dictateID, front = dictationTargetApp, cleanup = dictateTidy || dictateCleanup || Prefs.bool("dictateStream")
         dictateSelectionPending = true
         DispatchQueue.global().async { [weak self] in
             var secureField = false
@@ -3525,7 +3638,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 }
                 dictateSelection = selected
                 dictateBefore = before
-                if retry { finishDictation() }
+                if retry { finishDictation() } else { beginLive(selected) }
             }
         }
     }
@@ -3631,7 +3744,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let land: (String) -> Void = { [weak self] value in
             guard let self, dictateID == id, dictating else { return }
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {   // nothing left ("um", or "scratch that" on its own)
-                busy = false; dictating = false; dictateSelection = nil; cue("soundStop"); hide(after: 0.2); return
+                endLive(erase: true); busy = false; dictating = false; dictateSelection = nil; cue("soundStop"); hide(after: 0.2); return
             }
             js("final", value)
             insertDictation(value, tidied: true)
@@ -3831,7 +3944,7 @@ final class App: NSObject, WKScriptMessageHandler {
     func heard(_ now: String) {
         guard engine.isRunning || busy else { return }
         text = now
-        if dictating { scheduleDictateAhead(); showLive(now); return }   // the pill shows the newest words next to its wave
+        if dictating { liveType(now); scheduleDictateAhead(); showLive(now); return }   // the pill shows the newest words next to its wave
         if offerText != nil {
             js(drawingReply ? "words" : "draft", now)
             if clickTalk { quiet?.cancel(); let q = DispatchWorkItem { [weak self] in self?.stop() }; quiet = q; DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: q) }
@@ -3977,6 +4090,39 @@ final class App: NSObject, WKScriptMessageHandler {
         }
     }
 
+    // Live typing: start at key-down in a caret-only text field (a selection, a blind keyboard target or a secure field gets the normal insert at key-up).
+    func beginLive(_ selected: TextSelection) {
+        guard Prefs.bool("dictateStream"), dictating, !Prefs.bool("paused"), selected.range != nil, selected.text.isEmpty, !IsSecureEventInputEnabled() else { return }
+        let t = LiveTyper(selected)
+        if devTesting { t.log = { devLog($0) } }
+        liveTyper = t
+        liveMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] e in
+            if e.cgEvent?.getIntegerValueField(.eventSourceUserData) == LiveTyper.mark || e.isARepeat && e.type == .keyDown { return }
+            if e.type == .keyDown && e.keyCode == 53 { return }   // Esc cancels the dictation and takes the words back itself
+            DispatchQueue.main.async { self?.liveTyper?.halt() }
+        }
+    }
+    func liveType(_ now: String) {   // every partial: at most one update per 0.2 s
+        guard let t = liveTyper, t.live else { return }
+        liveWant = liveStable(now, before: dictateBefore)
+        guard liveItem2 == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            liveItem2 = nil
+            guard dictating, let t = liveTyper, !Prefs.bool("paused") else { return }
+            t.update(liveWant)
+        }
+        liveItem2 = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.02, 0.2 - Date().timeIntervalSince(t.posted)), execute: item)
+    }
+    func takeLive() -> LiveTyper? { let t = liveTyper; endLive(erase: false); return t }
+    func endLive(erase: Bool) {
+        liveItem2?.cancel(); liveItem2 = nil
+        if let m = liveMonitor { NSEvent.removeMonitor(m) }; liveMonitor = nil
+        let t = liveTyper; liveTyper = nil
+        if erase { t?.erase() }
+    }
+
     // Replace / Delete / Insert: the text goes to the saved selection, or for a draft to the saved cursor.
     func applyReplacement() {
         guard let draft = replacement, !replacing else { return }
@@ -3997,17 +4143,19 @@ final class App: NSObject, WKScriptMessageHandler {
     var whisperTake: WhisperTake?, dictateMerge = false, dictateTidy = true, dictateStyle = DictationTidy.Style.formal, liveText = "", liveItem: DispatchWorkItem?   // Whisper pieces sent while talking; Best = merge with Apple; free cleanup on; the app's tone; the pill's live words
     var dictateWhisper = false, whisperRecorder: WhisperRecorder?, whisperDelivered = true   // Whisper dictation: engine for this dictation, its recording, and whether the answer (or the fallback) already went in
     @discardableResult func saveDictation(_ value: String, appName: String) -> Bool {
+        if devTesting { return true }
         let saved = DictationData.record(value, raw: text.trimmingCharacters(in: .whitespacesAndNewlines), app: appName, seconds: dictateSeconds > 0 ? dictateSeconds : Date().timeIntervalSince(began))
         if !saved { js("dictated", ["text": "Your words are ready. Couldn’t save history or stats.", "ok": false]) }
         Atticus.settings.send("dictation", DictationData.state())
         return saved
     }
-    func prepareDictation(_ value: String, target: TextSelection) -> () -> Void {
-        let before = axAttribute(target.element, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole ? nil : target.value
+    func prepareDictation(_ value: String, target: TextSelection, base: String? = nil) -> () -> Void {
+        let before = axAttribute(target.element, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole ? nil : base ?? target.value
         let range = target.range
         return { [weak self] in
             guard let self else { return }
             lastDictation = value
+            if devTesting { return }   // the developer test hook leaves no history, stats or learning behind
             saveDictation(value, appName: target.app.localizedName ?? "App")
             stopReplay()
             guard Prefs.bool("dictateLearn"), axAttribute(target.element, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole else { return }
@@ -4197,7 +4345,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = spoken
         guard !source.isEmpty else {
-            stopDictationCleanup(); whisperDiscard()
+            stopDictationCleanup(); whisperDiscard(); endLive(erase: true)
             busy = false; dictating = false; cue("soundStop"); hide(after: 0.2)
             return
         }
@@ -4248,14 +4396,16 @@ final class App: NSObject, WKScriptMessageHandler {
     func insertDictation(_ heard: String, tidied: Bool = false) {
         let value = tidied ? heard : DictationData.fixed(heard)
         lastDictation = value   // ⌃⌘V always has the latest words, even when this delivery fails
+        let live = takeLive()
         guard let target = dictateSelection else {
-            dictationDeliveryFailed(value); return
+            live?.erase(); dictationDeliveryFailed(value); return
         }
-        let id = dictateID, inserted = prepareDictation(value, target: target)
-        target.apply(value, preserveFocus: true, valid: { [weak self] in
+        let id = dictateID, inserted = prepareDictation(value, target: target, base: live?.typed.isEmpty == false ? live?.base : nil)
+        let valid: () -> Bool = { [weak self] in
             self?.dictateID == id && self?.dictating == true && !Prefs.bool("paused") &&
             NSWorkspace.shared.frontmostApplication == target.app
-        }) { [weak self] ok in
+        }
+        let landed: (Bool) -> Void = { [weak self] ok in
             guard let self, dictateID == id else { return }
             if !ok { dictationDeliveryFailed(value); return }
             recordDictationEvent("ok")
@@ -4263,6 +4413,13 @@ final class App: NSObject, WKScriptMessageHandler {
             cue("soundDone"); js("dictated", ["text": "", "ok": true])
             hide(after: tidied ? min(3, 0.8 + Double(value.split(separator: " ").count) / 14) : 0.8); inserted()   // the finished words stay beside the check for a moment
         }
+        if let live, live.live, !live.typed.isEmpty {   // the words are already in the field: only the difference goes in
+            live.finish(value, valid: valid) { ok in
+                if ok { landed(true) } else { live.erase(); target.apply(value, preserveFocus: true, valid: valid, done: landed) }   // taken back first, so nothing doubles
+            }
+            return
+        }
+        target.apply(value, preserveFocus: true, valid: valid, done: landed)
     }
 
     func typed(_ t: String, keep: Bool = false, heard: Bool = false) {   // the typing box (keep: it stays open for the next one; heard: spoken about a drawing, its turn already shows)
@@ -5710,9 +5867,51 @@ extension Delegate {
             case "ask":
                 if let t = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value,
                    !t.trimmingCharacters(in: .whitespaces).isEmpty, !app.busy { app.show(); app.typed(t) }
+            case "dictate-test": app.devDictate(url)
             default: break
             }
         }
+    }
+}
+
+// Developer test hook, only on a Mac with ~/.config/atticus/dev-hooks (a team install never has that file):
+// wavelength://dictate-test?parts=<URL-encoded JSON list of partial transcripts>&final=<final text>&gap=<ms between partials>
+// runs the real live-typing path (field capture, throttled partials, final diff) without a mic, then logs what it typed to dev-dictate.log.
+let devHooksFile = NSHomeDirectory() + "/.config/atticus/dev-hooks", devLogFile = NSHomeDirectory() + "/.config/atticus/dev-dictate.log"
+func devLog(_ s: String) {
+    guard let h = FileHandle(forWritingAtPath: devLogFile) ?? { FileManager.default.createFile(atPath: devLogFile, contents: nil); return FileHandle(forWritingAtPath: devLogFile) }() else { return }
+    h.seekToEndOfFile(); h.write(Data((String(format: "%.2f ", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1000)) + s + "\n").utf8)); try? h.close()
+}
+extension App {
+    func devDictate(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: devHooksFile), !dictating, !busy, !engine.isRunning else { return }
+        let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let parts = (q.first { $0.name == "parts" }?.value).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String] } ?? []
+        let final = q.first { $0.name == "final" }?.value ?? "", gap = Double(q.first { $0.name == "gap" }?.value ?? "") ?? 350
+        try? "".write(toFile: devLogFile, atomically: true, encoding: .utf8)
+        devTesting = true; devTelemetryOff = true; dictating = true; busy = true; dictateTidy = false; dictateCleanup = false; dictateWhisper = false; dictateStyle = .verbatim; text = ""
+        devLog("start parts=\(parts.count) final=\(final)")
+        pill(true); show()
+        captureDictationSelection()
+        func wait(_ n: Int) {
+            guard dictating else { return devLog("aborted") }
+            if dictateSelectionPending && n < 60 { return DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(n + 1) } }
+            devLog("field \(dictateSelection == nil ? "none" : "ok") streaming=\(liveTyper != nil)")
+            func feed(_ i: Int) {
+                guard dictating else { return devLog("aborted") }
+                guard i < parts.count else {
+                    return DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+                        text = final; js("final", final); devLog("final \(final)")
+                        insertDictation(final, tidied: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in devLog("done dictating=\(dictating) busy=\(busy)"); devTesting = false; devTelemetryOff = false }
+                    }
+                }
+                text = parts[i]; liveType(parts[i]); showLive(parts[i]); devLog("partial \(parts[i])")
+                DispatchQueue.main.asyncAfter(deadline: .now() + gap / 1000) { feed(i + 1) }
+            }
+            feed(0)
+        }
+        wait(0)
     }
 }
 

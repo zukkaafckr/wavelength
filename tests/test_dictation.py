@@ -192,6 +192,7 @@ final class Harness {
     var dictateSelectionPending = false, dictateCleanup = false, dictateTidy = false, busy = true, dictating = true
     var dictateWhisper = false, whisperDelivered = true
     func whisperDiscard() {}
+    func endLive(erase: Bool) {}
     func whisperTranscribe(apple: String) {}
     func finalizeDictation(_ value: String, apple: String?) { insertDictation(value) }   // the free cleanup is tested in test_dictation_whisper
     var dictateID = 1, text = "Exact words.", inserted: [String] = [], dictateBefore = "Notes before the cursor."
@@ -253,6 +254,36 @@ print("dictation routing ok")
 '''
         self.assertIn('dictation routing ok', run_swift(self, swift, timeout=30))   # the hung-cleanup case waits out the 8 s fallback
 
+    def test_live_typing_diff_and_chunks(self):
+        # The pure parts of "Type words as I speak": the diff the typer sends, the stable words shown, key-event chunks.
+        source = (ROOT / 'Atticus.swift').read_text()
+        funcs = source[source.index('func liveDiff('):source.index('final class LiveTyper')]
+        swift = r'''import Foundation
+''' + funcs + r'''
+func check(_ typed: String, _ want: String, _ back: Int, _ add: String) { let d = liveDiff(typed, want); precondition(d.back == back && d.add == add, "diff \(typed) -> \(want): \(d)") }
+check("", "hello", 0, "hello"); check("hello", "hello", 0, ""); check("hello", "hello world", 0, " world")
+check("hello word how", "hello world how", 5, "ld how"); check("hello world", "hello", 6, ""); check("hello", "", 5, "")
+check("hello world", "Hello world, how are you?", 11, "Hello world, how are you?")
+check("caf\u{e9} \u{1F600}", "caf\u{e9} \u{1F601}", 1, "\u{1F601}")   // one backspace per character, not per UTF-16 unit
+check("e\u{301}a", "e\u{301}b", 1, "b")
+precondition(liveStable("hello wor", before: "") == "hello" && liveStable("hello", before: "") == "" && liveStable("", before: "") == "", "last word must stay unshown")
+precondition(liveStable("hello world how", before: "Dear Sam,") == " hello world" && liveStable("hello world how", before: "Dear Sam, ") == "hello world" && liveStable("a b c", before: "line\n") == "a b", "leading space rule")
+precondition(liveStable("  one   two  three ", before: "") == "one two", "spacing is normalised")
+let long = String(repeating: "word ", count: 30) + "\u{1F600}\u{1F600}"
+let chunks = liveChunks(long)
+precondition(chunks.allSatisfy { $0.count <= 20 && !$0.isEmpty } && String(decoding: chunks.flatMap { $0 }, as: UTF16.self) == long, "chunks must be <= 20 units and lossless")
+precondition(liveChunks("").isEmpty && liveChunks("ab") == [[97, 98]], "small chunks")
+// a stream of partials ends equal to the last stable words, with the backspaces a correction needs
+var typed = "", sent = 0
+for p in ["hello", "hello wor", "hello world how", "hello world how are", "hello word how are you", "hello world how are you doing"] {
+    let want = liveStable(p, before: ""), d = liveDiff(typed, want); sent += d.back; typed = String(typed.dropLast(d.back)) + d.add
+    precondition(typed == want, "replay \(typed) != \(want)")
+}
+precondition(typed == "hello world how are you" && sent == 15, "replayed text: \(typed) \(sent)")
+print("live diff ok")
+'''
+        self.assertIn('live diff ok', run_swift(self, swift))
+
     def test_selection_is_replaced_only_while_original_app_stays_front(self):
         source = (ROOT / 'Atticus.swift').read_text()
         method = source[source.index('    func insertDictation('):source.index('    func typed(')]
@@ -267,6 +298,11 @@ final class AppRef: Equatable {
 final class NSWorkspace {
     static let shared = NSWorkspace()
     var frontmostApplication: AppRef?
+}
+final class LiveTyper {   // stands in for the real typer: what insertDictation asks of it
+    var live = true, typed = "", base: String? = nil, finished: [String] = [], erased = 0, lands = true
+    func finish(_ final: String, valid: @escaping () -> Bool, done: @escaping (Bool) -> Void) { guard valid() else { return done(false) }; finished.append(final); done(lands) }
+    func erase() { erased += 1 }
 }
 final class Target {
     let app: AppRef
@@ -285,7 +321,9 @@ final class Harness {
     func cue(_ value: String) {}
     func js(_ call: String, _ arg: Any? = nil) {}
     func hide(after: Double, shrink: Bool = false) {}
-    func prepareDictation(_ value: String, target: Target) -> () -> Void { {} }
+    func prepareDictation(_ value: String, target: Target, base: String? = nil) -> () -> Void { {} }
+    var liveStub: LiveTyper?
+    func takeLive() -> LiveTyper? { let t = liveStub; liveStub = nil; return t }
     func dictationDeliveryFailed(_ value: String) { failed.append(value); busy = false; dictating = false }
     func recordDictationEvent(_ insert: String) {}
 ''' + method + r'''}
@@ -298,6 +336,15 @@ precondition(missing.failed == ["copy me"], "missing target lost the transcript"
 let moved = Target(user), h2 = Harness(); h2.dictateSelection = moved; NSWorkspace.shared.frontmostApplication = other
 h2.insertDictation("wrong")
 precondition(moved.received.isEmpty && h2.failed == ["wrong"] && NSWorkspace.shared.frontmostApplication == other, "dictation stole focus, typed into the old app, or lost the transcript")
+NSWorkspace.shared.frontmostApplication = user
+let typer = LiveTyper(); typer.typed = "hel"; let streamed = Harness(), box = Target(user); streamed.dictateSelection = box; streamed.liveStub = typer; streamed.insertDictation("Hello there")
+precondition(typer.finished == ["Hello there"] && box.received.isEmpty && streamed.failed.isEmpty && !streamed.dictating, "words already typed were inserted again instead of corrected")
+let broken = LiveTyper(); broken.typed = "hel"; broken.lands = false; let fell = Harness(), box2 = Target(user); fell.dictateSelection = box2; fell.liveStub = broken; fell.insertDictation("Hello there")
+precondition(broken.erased == 1 && box2.received == ["Hello there"], "a typer that lost events did not take its words back before the normal insert")
+let quiet = LiveTyper(); quiet.typed = ""; let none = Harness(), box3 = Target(user); none.dictateSelection = box3; none.liveStub = quiet; none.insertDictation("Fresh")
+precondition(quiet.finished.isEmpty && box3.received == ["Fresh"], "nothing typed live: the normal insert must carry the words")
+let gone = LiveTyper(); gone.typed = "x"; let noBox = Harness(); noBox.liveStub = gone; noBox.insertDictation("lost")
+precondition(gone.erased == 1 && noBox.failed == ["lost"], "no target: typed words stayed in the field")
 let late = Target(user), h3 = Harness(); late.deferred = true; h3.dictateSelection = late; NSWorkspace.shared.frontmostApplication = user
 h3.insertDictation("late"); h3.dictateID += 1; h3.dictating = false; late.pending?()
 precondition(late.received.isEmpty, "cancelled dictation replaced the selection")
@@ -488,6 +535,11 @@ enum DictationData { static func fixed(_ text: String) -> String { text } }
 final class AppRef: Equatable { static func == (a: AppRef, b: AppRef) -> Bool { a === b } }
 final class NSWorkspace { static let shared = NSWorkspace(); var frontmostApplication: AppRef? }
 var saves = true, saved: [String] = [], pasteHotkeyRegistered = true
+final class LiveTyper {   // stands in for the real typer: what insertDictation asks of it
+    var live = true, typed = "", base: String? = nil, finished: [String] = [], erased = 0, lands = true
+    func finish(_ final: String, valid: @escaping () -> Bool, done: @escaping (Bool) -> Void) { guard valid() else { return done(false) }; finished.append(final); done(lands) }
+    func erase() { erased += 1 }
+}
 final class Target {
     let app: AppRef; var received: [String] = [], deferred = false, pending: (() -> Void)?
     init(_ app: AppRef) { self.app = app }
@@ -506,7 +558,9 @@ final class Harness {
     func js(_ call: String, _ arg: Any? = nil) {
         if let d = arg as? [String: Any] { log.append("\(call) \(d["text"]!) \(d["ok"]!)"); if let w = d["words"] as? String { words.append(w) } } else { log.append("\(call) \(arg as? String ?? "")") }
     }
-    func prepareDictation(_ value: String, target: Target) -> () -> Void { {} }
+    func prepareDictation(_ value: String, target: Target, base: String? = nil) -> () -> Void { {} }
+    var liveStub: LiveTyper?
+    func takeLive() -> LiveTyper? { let t = liveStub; liveStub = nil; return t }
     func recordDictationEvent(_ insert: String) {}
     func hush() { dictating = false; dictateID += 1; busy = false }
     func shush() {}
@@ -673,7 +727,7 @@ if (!answer.classList.contains('old')) process.exit(console.error('a real ask no
         self.assertIn('pillOn = on', pill)
         self.assertNotIn('280', pill)
         heard = source[source.index('    func heard(_ now: String)'):]
-        self.assertIn('if dictating { scheduleDictateAhead(); showLive(now); return }', heard)
+        self.assertIn('if dictating { liveType(now); scheduleDictateAhead(); showLive(now); return }', heard)
         self.assertIn('self?.startDictateAhead(early: true)', heard)
         self.assertIn('!early || dictateAheadRuns < 2', heard)
         insert = source[source.index('    func insertDictation('):source.index('    func typed(')]
