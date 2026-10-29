@@ -86,10 +86,36 @@ def _role(task):
     return ''
 
 
+def _locked():
+    """One check at a time: two at once would both drive the same ClickUp page and both speak. A lock older than 3 minutes is stale."""
+    path = os.path.join(_dir(), 'hiring.lock')
+    try:
+        os.makedirs(_dir(), exist_ok=True)
+        if os.path.isdir(path) and time.time() - os.path.getmtime(path) > 180:
+            os.rmdir(path)
+        os.mkdir(path)
+        return path
+    except OSError:
+        return None
+
+
 def snapshot():
-    """-> {'applied': [...], 'assessments': [...]} or None when ClickUp can't be read. Puts the person's view back."""
+    """-> {'applied': [...], 'assessments': [...]} or None when ClickUp can't be read (or another check is running). Puts the person's view back."""
     names = lists()
-    if not names or not cdp.ensure_app('ClickUp'):
+    lock = _locked() if names else None
+    if not lock:
+        return None
+    try:
+        return _snapshot(names)
+    finally:
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+
+
+def _snapshot(names):
+    if not cdp.ensure_app('ClickUp'):
         return None
     tab = cdp.open_tab('ClickUp')
     if not tab:

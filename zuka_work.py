@@ -356,7 +356,7 @@ def install_clickup_check(times=("15:00",)):
     return str(path)
 
 
-def install_hiring_check(minutes=30, at_mac_secs=600):
+def install_hiring_check(minutes=120, at_mac_secs=600):
     """Write ~/Library/LaunchAgents/com.wavelength.hiringcheck.plist: every `minutes`, and once at load, but only while the person is at
     the Mac (touched keyboard or mouse in the last `at_mac_secs`). Speaks and notifies only when something is new. -> the plist path."""
     script = (f'idle=$(/usr/sbin/ioreg -c IOHIDSystem | /usr/bin/awk \'/HIDIdleTime/ {{print int($NF/1000000000); exit}}\'); [ "${{idle:-0}}" -lt {at_mac_secs} ] || exit 0; '
