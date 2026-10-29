@@ -1895,6 +1895,11 @@ def _handle(t, said=None):
             r = zuka_msg.confirm(t)
             if r: return r
         except Exception: pass
+        try:   # a yes / no for a pending Brave "Generate" press (zuka_brave); after the message gate so a pending send still wins
+            import zuka_brave
+            r = zuka_brave.confirm_generate(t)
+            if r: return r
+        except Exception: pass
         try:   # learned phrasings -> the phrasing that works; free taste-music requests are played and answered here
             import zuka_learn
             t = zuka_learn.alias(t)
