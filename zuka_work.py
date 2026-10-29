@@ -356,6 +356,23 @@ def install_clickup_check(times=("15:00",)):
     return str(path)
 
 
+def install_hiring_check(minutes=30, at_mac_secs=600):
+    """Write ~/Library/LaunchAgents/com.wavelength.hiringcheck.plist: every `minutes`, and once at load, but only while the person is at
+    the Mac (touched keyboard or mouse in the last `at_mac_secs`). Speaks and notifies only when something is new. -> the plist path."""
+    script = (f'idle=$(/usr/sbin/ioreg -c IOHIDSystem | /usr/bin/awk \'/HIDIdleTime/ {{print int($NF/1000000000); exit}}\'); [ "${{idle:-0}}" -lt {at_mac_secs} ] || exit 0; '
+              'out=$(/usr/bin/python3 "$1" --check-hiring 2>/dev/null); [ -n "$out" ] || exit 0; '
+              f'[ -x "{SAY}" ] && "{SAY}" "$out"; '
+              '/usr/bin/osascript -e \'on run argv\' -e \'display notification (item 1 of argv) with title "Hiring"\' -e \'end run\' "$out"')
+    plist = {'Label': 'com.wavelength.hiringcheck',
+             'ProgramArguments': ['/bin/bash', '-c', script, 'hiringcheck', str(Path(__file__).resolve().with_name('zuka_hiring.py'))],
+             'StartInterval': minutes * 60, 'RunAtLoad': True}
+    path = Path(os.path.expanduser('~')) / 'Library/LaunchAgents/com.wavelength.hiringcheck.plist'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'wb') as f:
+        plistlib.dump(plist, f)
+    return str(path)
+
+
 _HOW = re.compile(r"^how (?:do i|can i|to) (?:connect|set up|setup|link) click ?up(?: to (?:you|zuka))?$")
 _CU = re.compile(r"^(?:did (?P<who>\w+) (?:assign|give|send) me (?:any |a |some )?(?:new )?(?:scripts?|tasks?|work)(?: today| yet)?"
                  r"|(?:are there |is there )?any new (?:scripts?|tasks?)(?: for me)?(?: today)?"
@@ -460,6 +477,12 @@ def _tracker(kind):
     return f"I can't read the {kind} tracker page right now{_c()}. Want me to open it for you?"
 
 
+_HIRE = re.compile(r"^(?:check (?:the )?(?:hiring|applicants?|candidates?|assessments?)(?: pipeline| submissions?)?"
+                   r"|(?:any|are there any|is there any|did anyone|has anyone)(?: new)? (?:applicants?|candidates?|applications?|assessments?|assessment submissions?|submitted(?: an)? assessments?|submit(?:ted)?(?: an)? assessments?)(?: today| yet| now)?"
+                   r"|(?:any|anything) (?:new )?(?:in|on) (?:the )?(?:hiring pipeline|applied)"
+                   r"|who (?:applied|submitted)(?: an assessment)?(?: today)?)$")
+
+
 # ---------------------------------------------------------------- WhatsApp: what did <name> say
 _WA_SAY = re.compile(r"^what (?:did|has) (?P<n>[a-z0-9 ]+?) (?:say|said|send|sent|write|wrote|text|texted)(?: to me)?(?: on whatsapp| in whatsapp| over whatsapp)$")
 _WA_LATEST = re.compile(r"^(?:latest|recent|new|last) whatsapp (?:messages|chats|texts)$")
@@ -554,6 +577,9 @@ def handle(t, raw=''):
         m = _TRK.match(t)
         if m:
             return _tracker('takedown' if m.group('td') else 'winning')
+        if _HIRE.match(t):
+            import zuka_hiring
+            return zuka_hiring.handle_now()
         if _WA_LATEST.match(t):
             return zc._read_inbox('whatsapp')
         m = _WA_SAY.match(t)
