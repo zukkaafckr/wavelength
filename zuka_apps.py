@@ -258,7 +258,15 @@ def parse_clickup_board(text, me=''):
 
 
 def clickup_snapshot(me=''):
-    """Read the ClickUp app: board tasks from the open list view, plus the Inbox. -> dict or None when unreadable."""
+    """Read the ClickUp app: board tasks from the open list view, plus the Inbox. -> dict or None when unreadable.
+    Tries the page bridge first (zuka_clickup); the accessibility reader below is only the fallback."""
+    try:
+        import zuka_clickup
+        snap = zuka_clickup.clickup_snapshot_bridge(me)
+        if snap is not None:
+            return snap
+    except Exception:
+        pass
     base = read_app('ClickUp', view='inbox', pages=1)
     if not base:
         return None
