@@ -2,6 +2,7 @@
 
 Drives the browser through AppleScript `execute <tab> javascript` (Brave: View > Developer > Allow JavaScript from Apple Events), about 0.25 s a call.
 Never touches Brave's profile or settings, never closes or navigates away a tab it didn't open, never types passwords or keys.
+`press ... --confirmed` (CLI only) presses any one exact-label control after Claude has asked the user and heard yes; each press is logged to press.log.
 Anything that spends credits (Generate, Create, Submit, Buy, Send ...) is refused by click_text and goes only through the gate:
 request_generate() speaks the cost and stores ONE pending press in ~/.config/atticus/generate-pending.json (2 minutes);
 zuka_commands._handle passes the next "yes"/"no" to confirm_generate() right after zuka_msg.confirm. One yes = one press.
@@ -20,6 +21,7 @@ import zuka_commands as zc  # noqa: E402
 BROWSER = 'Brave Browser'
 PENDING_FILE = os.path.expanduser('~/.config/atticus/generate-pending.json')
 PENDING_WINDOW = 120
+PRESS_LOG = os.path.expanduser('~/.config/atticus/press.log')   # one line per confirmed press: time, tab host, label (no page content)
 RESULT_FILE = os.path.expanduser('~/.config/atticus/generate-result.json')   # what the last spoken answer did; the CLI polls it
 DOWNLOADS = os.path.expanduser('~/Downloads')
 _PARTIAL = ('.crdownload', '.part', '.download', '.tmp')
@@ -107,6 +109,16 @@ _JS_CLICK = """(function(label){
  if(!el)return false;el.click();return true})(%s)"""
 
 
+# counts the visible matches first and clicks only when there is exactly one: 'ok' / 'none' / 'many'
+_JS_PRESS_ONE = """(function(label){
+ var want=label.trim().toLowerCase();
+ var hits=[].slice.call(document.querySelectorAll('button,a,[role=button]')).filter(function(x){
+  var r=x.getBoundingClientRect();
+  return r.width>0&&r.height>0&&(x.innerText||x.value||'').trim().toLowerCase()===want&&!x.disabled});
+ if(hits.length===0)return 'none';if(hits.length>1)return 'many';
+ hits[0].click();return 'ok'})(%s)"""
+
+
 def fill(selector_or_label, text, tab_key=''):
     """Set a textarea / input / contenteditable the way React sites accept it (native setter + input event). True when set."""
     return js(_JS_FILL % (json.dumps(selector_or_label), json.dumps(text)), tab_key) is True
@@ -117,6 +129,23 @@ def click_text(label, tab_key=''):
     if _RISKY.search(label or ''):
         return False
     return js(_JS_CLICK % json.dumps(label), tab_key) is True
+
+
+def press_confirmed(label, tab_key, log_path=None):
+    """Press the ONE visible button/link whose text is exactly label, risky label or not. Only the CLI calls this, and only with --confirmed
+    (the caller has already asked the user and heard yes). Refuses when the label matches none or more than one control. -> 'pressed' / 'none' / 'many'."""
+    host = js('location.host', tab_key)
+    r = js(_JS_PRESS_ONE % json.dumps(label), tab_key)
+    if r != 'ok':
+        return r if r in ('none', 'many') else 'none'
+    path = log_path or PRESS_LOG
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'a') as f:
+            f.write('%s\t%s\t%s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), host if isinstance(host, str) else '', label.replace('\n', ' ').replace('\t', ' ')))
+    except OSError:
+        pass
+    return 'pressed'
 
 
 def wait_for(js_condition, tab_key='', timeout=20):
@@ -280,6 +309,7 @@ def main(argv=None):
     p = sub.add_parser('js'); p.add_argument('expr'); p.add_argument('--tab', default='')
     p = sub.add_parser('fill'); p.add_argument('--tab', required=True); p.add_argument('selector'); p.add_argument('text')
     p = sub.add_parser('click'); p.add_argument('--tab', required=True); p.add_argument('label')
+    p = sub.add_parser('press'); p.add_argument('--tab', required=True); p.add_argument('label'); p.add_argument('--confirmed', action='store_true')
     p = sub.add_parser('wait'); p.add_argument('--tab', required=True); p.add_argument('cond'); p.add_argument('--timeout', type=float, default=20)
     p = sub.add_parser('open'); p.add_argument('url_key'); p.add_argument('url')
     p = sub.add_parser('downloads'); p.add_argument('--since', type=float, required=True)
@@ -301,6 +331,12 @@ def main(argv=None):
             out, ok = 'refused: use the generate gate', False
         else:
             out = ok = click_text(a.label, a.tab)
+    elif a.cmd == 'press':
+        if not a.confirmed:
+            out, ok = 'refused: ask the user first, then run again with --confirmed', False
+        else:
+            out = press_confirmed(a.label, a.tab)
+            ok = out == 'pressed'
     elif a.cmd == 'wait':
         out = ok = wait_for(a.cond, a.tab, a.timeout)
     elif a.cmd == 'open':

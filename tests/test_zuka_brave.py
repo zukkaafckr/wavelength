@@ -241,5 +241,71 @@ class TestCli(Base):
         self.assertEqual((r, page.clicks), ('not confirmed', []))
 
 
+class Press(Base):
+    def setUp(self):
+        super().setUp()
+        self.log = os.path.join(self.d, 'press.log')
+        p = mock.patch.object(b, 'PRESS_LOG', self.log)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def fake(self, result):
+        calls = []
+        def js(expr, tab):
+            calls.append(expr)
+            return 'studio.test' if expr == 'location.host' else result
+        return js, calls
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = b.main(list(argv))
+        return rc, json.loads(buf.getvalue())
+
+    def test_refuses_without_confirmed(self):
+        js, calls = self.fake('ok')
+        with mock.patch.object(b, 'js', js):
+            rc, out = self.run_cli('press', '--tab', 'studio.test', 'Generate')
+        self.assertEqual((rc, out['ok'], calls, os.path.exists(self.log)), (1, False, [], False))
+        self.assertIn('ask the user', out['result'])
+
+    def test_confirmed_presses_risky_label_and_logs_once(self):
+        js, calls = self.fake('ok')
+        with mock.patch.object(b, 'js', js):
+            rc, out = self.run_cli('press', '--tab', 'studio.test', 'Generate', '--confirmed')
+        self.assertEqual((rc, out['result']), (0, 'pressed'))
+        self.assertEqual(len([c for c in calls if c != 'location.host']), 1)
+        lines = open(self.log).read().splitlines()
+        self.assertEqual(len(lines), 1)
+        ts, host, label = lines[0].split('\t')
+        self.assertEqual((host, label), ('studio.test', 'Generate'))
+        self.assertRegex(ts, r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$')
+
+    def test_two_matches_refused_nothing_logged(self):
+        js, _ = self.fake('many')
+        with mock.patch.object(b, 'js', js):
+            rc, out = self.run_cli('press', '--tab', 'studio.test', 'Delete', '--confirmed')
+        self.assertEqual((rc, out['result'], os.path.exists(self.log)), (1, 'many', False))
+
+    def test_no_match_or_no_tab_not_logged(self):
+        for r in ('none', None):
+            js, _ = self.fake(r)
+            with mock.patch.object(b, 'js', js):
+                rc, out = self.run_cli('press', '--tab', 'studio.test', 'Send', '--confirmed')
+            self.assertEqual((rc, out['result'], os.path.exists(self.log)), (1, 'none', False))
+
+    def test_script_counts_matches_before_clicking(self):
+        self.assertIn('hits.length>1', b._JS_PRESS_ONE)
+        self.assertLess(b._JS_PRESS_ONE.index('hits.length>1'), b._JS_PRESS_ONE.index('.click()'))
+
+    def test_click_still_refuses_risky(self):
+        page = FakePage()
+        with mock.patch.object(b, 'js', page):
+            rc, out = self.run_cli('click', '--tab', 'studio.test', 'Publish')
+        self.assertEqual((rc, page.clicks), (1, []))
+
+
 if __name__ == '__main__':
     unittest.main()
