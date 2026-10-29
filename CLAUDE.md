@@ -33,13 +33,13 @@ Name and call-name: letters, numbers, spaces and hyphens only. If they want an a
 ## Step 1. Install
 
 **No Homebrew is fine.** Install what's missing into `~/.local/bin` (no sudo, no admin password), telling them in one line what each is for:
-- `gh` (GitHub sign-in, needed for the private repo and for updates): download the macOS arm64 zip from https://github.com/cli/cli/releases/latest, unzip it and copy `bin/gh` to `~/.local/bin/`.
+- `gh` (optional now: the repo is public, so cloning and updates need no GitHub sign-in): download the macOS arm64 zip from https://github.com/cli/cli/releases/latest, unzip it and copy `bin/gh` to `~/.local/bin/`.
 - `uv` (sets up the voice): `curl -LsSf https://astral.sh/uv/install.sh | sh` (its official installer, puts it in `~/.local/bin`).
 - `ffmpeg` is optional: without it the greetings are skipped and everything else works. Mention it, don't push it.
 - Apple's command line tools (to build the app): `xcode-select --install`; they click Install in the window that appears.
 Add `export PATH="$HOME/.local/bin:$PATH"` to their `~/.zprofile` if it isn't there.
 
-1. This repo is private: they need to have accepted the GitHub invite and be signed in (`gh auth status`; if not, `gh auth login`, they sign in themselves). Clone it into `~/Projects/` (for example `git clone <the link they pasted> ~/Projects/<name-in-lowercase>`) and `cd` into it. If the folder already exists, ask before touching it.
+1. This repo is public: no GitHub invite or sign-in is needed. Clone it into `~/Projects/` (for example `git clone <the link they pasted> ~/Projects/<name-in-lowercase>`) and `cd` into it. If the folder already exists, ask before touching it.
 2. Run `python3 team/personalize.py "NAME" "CALLNAME"`. It runs once per copy. If it says "Already personalised", leave the name as it is and tell them how to start from a fresh copy to change it.
 3. Run `bash team/install.sh` with the right flags:
    - add `--voice` only if they chose the natural voice
@@ -71,7 +71,7 @@ The app's own setup window guides this. Stay with them and explain each ask in o
 
 ## Updating later
 
-Updates come from the team repo on their own: an hourly check (`com.wavelength.update`, installed by `team/install.sh`) runs `team/update.sh --auto`. It only installs while nobody has touched the Mac for 10 minutes, tests the new version on a copy first, keeps the assistant's name, call-name and voice, and rebuilds. To update right now: `bash team/update.sh`. It needs the GitHub sign-in to work in the background: `gh auth login`, then `gh auth setup-git`. Never merge from the original Atticus or anywhere else: fixes come from the team repo only.
+Updates come from the team repo on their own: an hourly check (`com.wavelength.update`, installed by `team/install.sh`) runs `team/update.sh --auto`. It only installs while nobody has touched the Mac for 10 minutes, tests the new version on a copy first, keeps the assistant's name, call-name and voice, and rebuilds. To update right now: `bash team/update.sh`. It needs no GitHub sign-in, since the repo is public. Never merge from the original Atticus or anywhere else: fixes come from the team repo only.
 
 ## Voice
 

@@ -21,7 +21,7 @@ answers questions about what's on your screen. You choose its name (Zuka, Nova, 
 
 - A Mac with macOS 26 or newer (8 GB works, including the natural voice; 16 GB is best for the optional extra-expressive greetings)
 - [Claude Code](https://claude.com/claude-code), signed in to your Claude plan
-- An invite to this private repo, and about 1 GB free if you want the natural voice (5 GB more for the extra-expressive greetings)
+- About 1 GB free if you want the natural voice (5 GB more for the extra-expressive greetings)
 
 ## Install
 
