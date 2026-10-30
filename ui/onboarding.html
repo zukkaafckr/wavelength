@@ -868,6 +868,18 @@
       $('p-claude').querySelector('.allow').textContent = { install: 'Install', login: 'Sign In', upgrade: 'Upgrade' }[c.need] || 'Allow';
       if (last) ob.set(last);
     },
+    pagejs(r) {   // the page-reading row's answer: why it did not turn on, the fix beside it, and the by-hand steps
+      const row = $('a-chrome'), line = row.querySelector('.txt span'), btn = row.querySelector('.allow');
+      btn.classList.remove('wait'); btn.textContent = r.ok ? 'Turn On' : 'Try Again'; delete line.dataset.why;
+      row.querySelectorAll('.pjx').forEach(e => e.remove());
+      line.textContent = r.text; line.classList.toggle('warn', !r.ok);
+      if (r.ok) return;
+      const hand = document.createElement('span'); hand.className = 'pjx'; hand.textContent = r.hand; row.querySelector('.txt').append(hand);
+      if (r.pane) {
+        const fix = document.createElement('button'); fix.className = 'alt pjx'; fix.textContent = r.pane === 'ax' ? 'Open Accessibility settings' : 'Open Automation settings';
+        fix.onclick = () => post({ do: 'pane', id: r.pane }); row.querySelector('.txt').insertBefore(fix, hand);
+      }
+    },
     walk(id) {   // Enable All: the step it is on says what to do there; the button waits until the walk ends
       document.querySelectorAll('#agents .row').forEach(r => {
         const line = r.querySelector('.txt span'), now = r.id === 'a-' + id;

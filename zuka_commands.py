@@ -1877,9 +1877,9 @@ def handle(t, raw=None):
     said = _handle(t, raw)
     if said is None:   # the wider set of free Mac commands (zuka_more.py), last, so the commands above win
         try:
-            import zuka_work, zuka_more
+            import zuka_work, zuka_more, zuka_screen
             r0 = raw if isinstance(raw, str) and raw.strip() else (t if isinstance(t, str) else '')   # what was really said (case kept) when the caller has it
-            said = zuka_work.handle(_norm(t), r0) or zuka_more.handle(_norm(t), r0)
+            said = zuka_screen.handle(_norm(t), r0) or zuka_work.handle(_norm(t), r0) or zuka_more.handle(_norm(t), r0)   # zuka_screen: free local 'what's on my screen' (reads the window, answers with the local brain)
         except ImportError: pass
         except Exception: said = FAIL.format(call=CALL()) if '{call}' in FAIL else None
     return clean_call(said)

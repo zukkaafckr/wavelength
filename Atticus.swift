@@ -5516,6 +5516,7 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         if b["do"] == "kofi" { openTipJar("setup"); return }
         if b["do"] == "feedback" { Atticus.settings.open(tab: "feedback"); return }
         if b["do"] == "enableAll" { return enableAll(connected: b["connected"] == "true") }
+        if b["do"] == "pane" { return openPane(b["id"] ?? "") }
         if b["do"] == "provider", let c = b["client"], ["claude", "devin", "pi"].contains(c) {   // the plan row's Change provider sheet
             Atticus.settings.apply("client", c)
             for k in ["apiBase", "apiKey", "apiModel"] { if let v = b[k] { Atticus.settings.apply(k, v) } }
@@ -5543,6 +5544,11 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
 
     // A permission's Allow button, from setup or Settings. One click shows one thing: macOS's own box the first time
     // (its button lands on the right list), System Settings once macOS won't ask again. Both at once confused people.
+    // The page-reading row's fix button: the System Settings pane that is missing (Accessibility, or Automation pointed at System Events).
+    func openPane(_ id: String) {
+        if id == "ax" { settings("Accessibility") } else if id == "auto" { settings("Automation", point: "System Events") }
+    }
+
     func grant(_ id: String) {
         switch id {
         case "mic":
@@ -5569,9 +5575,14 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         case "auto":
             Atticus.settings.open(tab: "apps")
         case "chrome":   // clicks Chrome's View > Developer > Allow JavaScript from Apple Events; Atticus keeps it on after this OK
-            DispatchQueue.global().async {
-                let p = py(["--allow-js"]); try? p.run(); p.waitUntilExit()
-                if p.terminationStatus == 0 { DispatchQueue.main.async { Prefs.set("pageJS", true) } }
+            DispatchQueue.global().async { [weak self] in
+                let p = py(["--allow-js"]), out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+                try? p.run(); let d = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+                let r = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? ["code": "error", "ok": false, "text": "Could not turn it on.", "hand": "Do it by hand: View > Developer > Allow JavaScript from Apple Events.", "pane": ""]
+                DispatchQueue.main.async {
+                    if p.terminationStatus == 0 { Prefs.set("pageJS", true) }
+                    self?.call("ob.pagejs", r); Atticus.settings.send("pagejs", r)   // the row says why, in plain words
+                }
             }
         default: break
         }
@@ -6448,6 +6459,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
                 self?.send("allowDone", [Any]())
             }
         case "grant": if let id = b["id"] as? String { onboarding.grant(id) }
+        case "pane": if let id = b["id"] as? String { onboarding.openPane(id) }
         case "enableAll": onboarding.enableAll(connected: b["connected"] as? String == "true")
         case "connectors": onboarding.grant("connectors")
         case "stopAllow": Apps.job += 1

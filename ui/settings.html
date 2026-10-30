@@ -1009,6 +1009,11 @@
       if(result.meeting){if(expectedMeeting===result.meeting.id)openMeeting(result.meeting,result.markdown);return;}
       if(Array.isArray(result.meetings)){if(result.query!==undefined&&result.query!==$('meetingq').value.trim())return;savedMeetings=result.meetings;selectedMeeting=0;paintMeetings();}
     },
+    pagejs(r) {   // the page-reading row's answer: why it did not turn on, the fix beside it, and the by-hand steps
+      const line = document.querySelector('[data-g="chrome"]').closest('.row').querySelector('.t span');
+      if (line) line.textContent = r.ok ? 'Zuka turns this on itself.' : r.text;
+      showNotice(r.ok ? r.text : r.text + ' ' + r.hand, r.pane ? (r.pane === 'ax' ? 'Open Accessibility' : 'Open Automation') : '', () => post({ do: 'pane', id: r.pane }));
+    },
     walk(id) { document.querySelectorAll('#perms .row, #agentsetup .row').forEach(r => r.classList.toggle('now', !!id && !!r.querySelector(`[data-g="${id}"]`))); },   // Enable All: the step it is on
   connectors(c) { const n = c.connected.length, s = c.signin.length; document.getElementById('conntext').textContent = n ? c.connected.slice(0, 3).join(', ') + (n > 3 ? ` and ${n - 3} more` : '') + ' connected' + (s ? ` · ${s} need sign-in` : '') : s ? `${s} need sign-in` : 'Gmail, Drive and more.'; connected = n > 0; },
   perms(p) {   // each row shows Allowed or its Allow button

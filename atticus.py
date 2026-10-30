@@ -2901,6 +2901,193 @@ def web(cmd, n='', text='', app=None, fresh=False, want='', page=None):
         return f'Could not use the page: {e}\nUse the screen instead: {HANDS} see'   # e.g. a second, windowless Chrome took the AppleScript
 
 
+PAGE_JS_HAND = 'Do it by hand: View > Developer > Allow JavaScript from Apple Events.'
+PAGE_JS_LAST = {}   # the last page_js() result, for a caller that only gets a yes/no
+
+
+def log_app_err(line):
+    """One timestamped line in ~/.config/atticus/app.err, so "it will not turn on" can be debugged from afar."""
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(os.path.join(DIR, 'app.err'), 'a') as f: f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + line.replace('\n', ' ')[:400] + '\n')
+    except OSError: pass
+
+
+def osa_run(script, *args, timeout=20):
+    """osascript with its exit code and error text kept (osa() throws them away): (code, stdout, stderr); code -9 = it hung."""
+    try:
+        r = subprocess.run(['osascript', '-e', script, *args], capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired: return -9, '', 'timed out'
+
+
+def perm_reason(err):
+    """What an osascript error says about missing privacy switches: 'no-automation', 'no-accessibility' or ''."""
+    if '-1743' in err or 'not authorized to send apple events' in err.lower(): return 'no-automation'
+    if '-25211' in err or '-1719' in err or 'assistive access' in err.lower(): return 'no-accessibility'
+    return ''
+
+
+# One read (and, when asked, one click) of View > Developer > Allow JavaScript from Apple Events. Answers "code|detail".
+# English names first; a translated browser gets the View menu by position (5th bar item), its Developer submenu as the last
+# item that has a submenu, and the switch as the last named item in it. Only ever clicks when the check mark is missing.
+PAGE_JS_SCRIPT = '''on run argv
+set pn to item 1 of argv
+set doClick to (item 2 of argv) is "1"
+set bringFront to (item 3 of argv) is "1"
+tell application "System Events"
+if not (exists process pn) then return "not-running|"
+tell process pn
+if (count of menu bars) is 0 then return "not-running|no menu bar yet"
+if bringFront then set frontmost to true
+set viewItem to missing value
+try
+set viewItem to menu bar item "View" of menu bar 1
+end try
+if viewItem is missing value then
+try
+set viewItem to menu bar item 5 of menu bar 1
+end try
+end if
+if viewItem is missing value then return "no-item|no View menu"
+set dev to missing value
+try
+set dev to menu item "Developer" of menu 1 of viewItem
+end try
+if dev is missing value then
+try
+repeat with mi in (menu items of menu 1 of viewItem)
+if (count of menus of mi) > 0 then set dev to mi
+end repeat
+end try
+end if
+if dev is missing value then return "managed|no Developer menu"
+set m to missing value
+try
+set m to menu item "Allow JavaScript from Apple Events" of menu 1 of dev
+end try
+if m is missing value then
+set cnt to 0
+try
+repeat with mi in (menu items of menu 1 of dev)
+if (name of mi) is not missing value then
+set cnt to cnt + 1
+set m to mi
+end if
+end repeat
+end try
+if cnt < 3 then set m to missing value
+end if
+if m is missing value then return "no-item|Developer menu has no switch"
+set nm to name of m
+if nm is missing value then set nm to "?"
+if not (enabled of m) then
+if (count of windows) is 0 then return "no-window|menus are disabled until a window is open"
+set others to 0
+repeat with mi in (menu items of menu 1 of dev)
+if (name of mi) is not missing value and mi is not m and (enabled of mi) then set others to others + 1
+end repeat
+if others > 0 then return "managed|only the switch is disabled"
+return "managed|whole Developer menu is disabled"
+end if
+set state to "off"
+if (value of attribute "AXMenuItemMarkChar" of m) is not missing value then set state to "on"
+if state is "off" and doClick then
+click m
+delay 0.5
+if (value of attribute "AXMenuItemMarkChar" of m) is not missing value then set state to "clicked"
+end if
+return state & "|" & nm
+end tell
+end tell
+end run'''
+
+
+def page_js_text(code, app):
+    """The plain-English line for each result code, and which System Settings pane fixes it."""
+    return {
+        'ok': (f'Page reading is on in {app}.', ''),
+        'no-accessibility': ('Allow Accessibility for this app first, then try again.', 'ax'),
+        'no-automation': ('Allow Automation for System Events first, then try again.', 'auto'),
+        'not-running': (f'I opened {app}. Try again in a moment.', ''),
+        'off': (f'Page reading is off in {app}.', ''),
+        'no-window': (f'Open a window in {app}, then try again.', ''),
+        'managed': (f'{app} is managed by your organization, so this switch is locked.', ''),
+        'no-item': (f'I could not find the switch in {app}\u2019s menu.', ''),
+        'failed': (f'{app} ignored the click.', ''),
+        'timeout': (f'{app} did not answer. Try again.', ''),
+    }.get(code, (f'Could not turn it on in {app}.', ''))
+
+
+def launch_app(app):
+    try: return subprocess.run(['open', '-g', '-a', app], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired): return False
+
+
+PAGE_JS_PROFILES = {'Google Chrome': 'Google/Chrome', 'Brave Browser': 'BraveSoftware/Brave-Browser', 'Microsoft Edge': 'Microsoft Edge',
+                    'Chromium': 'Chromium', 'Vivaldi': 'Vivaldi', 'Arc': 'Arc/User Data', 'Opera': 'com.operasoftware.Opera'}
+
+
+def page_js_pref(app):
+    """Read only: does the browser's last-used profile have the switch on in its Preferences file? (Written a moment after a click, so it never proves "off".)"""
+    base = os.path.join(HOME, 'Library/Application Support', PAGE_JS_PROFILES.get(app, ''))
+    if app not in PAGE_JS_PROFILES: return False
+    try:
+        with open(os.path.join(base, 'Local State')) as f: profile = json.load(f).get('profile', {}).get('last_used') or 'Default'
+    except (OSError, ValueError): profile = 'Default'
+    try:
+        with open(os.path.join(base, profile, 'Preferences')) as f: return json.load(f).get('browser', {}).get('allow_javascript_apple_events') is True
+    except (OSError, ValueError): return False
+
+
+def page_js(app, click=True):
+    """Chromium browsers: is View > Developer > Allow JavaScript from Apple Events on, and turn it on if not.
+    -> {code, ok, app, text, hand, pane}. Never switches it off; a failure says why (see page_js_text) and goes to app.err."""
+    def done(code, detail=''):
+        text, pane = page_js_text(code, app)
+        out = {'code': code, 'ok': code == 'ok', 'app': app, 'text': text, 'hand': PAGE_JS_HAND, 'pane': pane}
+        PAGE_JS_LAST.clear(); PAGE_JS_LAST.update(out)
+        if code != 'ok': log_app_err(f'page-js {app}: {code} {detail}'.rstrip())
+        return out
+    rc, _, err = osa_run('tell application "System Events" to count of menu bars of process "Finder"', timeout=30)   # the two switches the click needs
+    reason = perm_reason(err)
+    if reason: return done(reason, err[-200:])
+    if rc == -9: return done('timeout', 'permission probe hung (Automation prompt open?)')
+    proc = proc_of(app) if rc == 0 else app
+    launched = opened = False
+    for attempt in range(3):   # 0: read/click; 1: after launching, the menu bar takes a moment; 2: front the app once, then click again
+        rc, out, err = osa_run(PAGE_JS_SCRIPT, proc, '1' if click else '0', '1' if attempt == 2 else '0')
+        reason = perm_reason(err)
+        if reason: return done(reason, err[-200:])
+        if rc == -9: return done('timeout', 'menu read hung')
+        if rc: return done('error', err[-200:])
+        code, _, detail = out.partition('|')
+        if code == 'not-running':
+            if not launched:
+                launched = launch_app(app)
+                if not launched: return done('not-running', f'could not open {app}')
+            for _ in range(40):   # up to 8 s for a launching browser's menu bar
+                time.sleep(0.2)
+                rc, out, err = osa_run(PAGE_JS_SCRIPT, proc, '1' if click else '0', '0')
+                if rc == 0 and not out.startswith('not-running'): break
+            else: return done('not-running', 'opened it; no menu bar yet')
+            code, _, detail = out.partition('|')
+        if code == 'no-window':   # its menus are not checked until a window exists: the profile's own Preferences file still says if it is on
+            if page_js_pref(app): return done('ok', 'on (Preferences file)')
+            if click and attempt == 0 and not opened:
+                opened = True
+                osa_run(f'tell application "{osa_quote(app)}" to make new window', timeout=10); time.sleep(1.5)
+                continue
+            return done('no-window', detail)
+        if code in ('on', 'clicked'): return done('ok', code)
+        if code == 'off':
+            if not click: return done('off', 'read only')
+            if attempt == 2: return done('failed', 'clicked twice, check mark still missing')
+            continue
+        return done(code if code in ('managed', 'no-item', 'not-running') else 'error', detail or out)
+    return done('failed', 'unreachable')
+
+
 def allow_page_js(app, ask=False):
     """Chromium browsers: View > Developer > Allow JavaScript from Apple Events, clicked by its menu. Asks the user once (Settings: pageJS), then keeps it on."""
     if ask and not pref('pageJS', False) and not pref('fixSetup', False):
@@ -2908,10 +3095,7 @@ def allow_page_js(app, ask=False):
                                                           'cmd': 'View > Developer > Allow JavaScript from Apple Events, kept on.'}, 60) != 'y':
             return False
         if not os.environ.get('ATTICUS_AGENT'): ask_user({'set': 'pageJS', 'value': True}, 5)   # an agent's chip sets it on Allow
-    # shortcut: English menu names only; a translated Chrome needs the item found by position
-    return osa('on run argv\ntell application "System Events" to tell process (item 1 of argv)\n'
-               'set m to menu item "Allow JavaScript from Apple Events" of menu 1 of menu item "Developer" of menu 1 of menu bar item "View" of menu bar 1\n'
-               'if value of attribute "AXMenuItemMarkChar" of m is missing value then click m\nreturn "on"\nend tell\nend run', proc_of(app)) == 'on'
+    return page_js(app)['ok']
 
 
 # Setup an agent can ask for mid-task. macOS lets only the user flip its privacy switches; page reading Atticus turns on itself.
@@ -2930,7 +3114,7 @@ def need(kind, why='', app='', do=False):
         app = app or 'Brave Browser'
         if do or pref('fixSetup', False): emit([f'▸ Turning on page reading in {app}'])
         elif ask_user({'need': kind, 'app': app, 'q': f'I can turn on page reading in {app} for you', 'cmd': why}, min(wait, 600)) != 'y': return skip
-        return f'Turned on {name}. Continue, and say so in one line.' if allow_page_js(app) else f'Could not turn on {name}. ' + skip
+        return f'Turned on {name}. Continue, and say so in one line.' if allow_page_js(app) else f'Could not turn on {name}: ' + PAGE_JS_LAST.get('text', '') + ' ' + skip
     return f'{name} is on now. Continue the task with it.' if ask_user({'need': kind, 'app': app, 'q': f'Turn on {name}', 'cmd': why}, wait) == 'y' else skip
 
 
@@ -7586,13 +7770,12 @@ def main():
         return
     if args[:1] in (['--show'], ['--bg']):   # the AI writes either "--show --bg <url>" or "--bg <url>"
         return print(show(' '.join(a for a in args[1:] if a != '--bg'), '--bg' in args[:2] or not wants_focus()))
-    if args[:1] == ['--allow-js']:   # Setup → Turn on: the user's click is the OK
-        app = ' '.join(args[1:]) or 'Brave Browser'
-        subprocess.run(['open', '-g', '-a', app])
-        for _ in range(50):   # a launching browser has no menu bar yet, at most 5 s
-            if allow_page_js(app): return print('on')
-            time.sleep(0.1)
-        print(f'Could not turn it on. In {app}: View > Developer > Allow JavaScript from Apple Events.'); sys.exit(1)
+    if args[:1] == ['--allow-js']:   # Setup → Turn on: the user's click is the OK. Prints one JSON line (code, ok, text, hand, pane); exit 0 only when it is on
+        r = page_js(' '.join(args[1:]) or 'Brave Browser')
+        print(json.dumps(r)); sys.exit(0 if r['ok'] else 1)
+    if args[:1] == ['--page-js-state']:   # read only: never clicks
+        r = page_js(' '.join(args[1:]) or 'Brave Browser', click=False)
+        print(json.dumps(r)); sys.exit(0 if r['ok'] else 1)
     if args[:1] == ['--window']:
         rest = args[1:]; offset = 0
         if '--offset' in rest:
