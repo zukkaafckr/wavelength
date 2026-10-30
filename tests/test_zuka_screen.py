@@ -159,5 +159,135 @@ class ReadAloud(unittest.TestCase):
             self.assertEqual(s.handle('read this to me'), s.NO_TEXT)
 
 
+class ReadPaths(unittest.TestCase):
+    """Fall-through order bridge -> head -> full, hard time limits, and privacy before fetch. Everything is faked."""
+    LONG = 'Sam went to the market this morning and bought milk, eggs and bread for the whole week. ' * 8
+
+    def look(self, app, **kw):
+        with mock.patch.object(s, 'front', return_value=(app, '')), mock.patch.object(s, 'peek_cdp', return_value=kw.get('cdp_peek')), \
+                mock.patch.object(s, 'read_cdp', return_value=kw.get('cdp', '')), mock.patch.object(s, 'peek_browser', return_value=kw.get('peek', ('', ''))), \
+                mock.patch.object(s, 'read_browser', return_value=kw.get('browser', '')) as rb, \
+                mock.patch.object(s, 'read_app', side_effect=kw.get('app_reads', [('', '')])) as ra:
+            d = s.look(deep=kw.get('deep', False))
+        return d, rb, ra
+
+    def test_browser_bridge_first(self):
+        d, rb, ra = self.look('Brave Browser', peek=('chess.example.org', 'Chess'), browser=self.LONG)
+        self.assertEqual(d['path'], 'bridge'); ra.assert_not_called()
+
+    def test_browser_without_page_js_falls_to_head(self):
+        d, rb, ra = self.look('Brave Browser', peek=('', ''), app_reads=[(self.LONG, 'Chess')])
+        rb.assert_not_called(); self.assertEqual(d['path'], 'head'); self.assertEqual(ra.call_count, 1)
+
+    def test_browser_denied_host_never_fetched_nor_read(self):
+        d, rb, ra = self.look('Google Chrome', peek=('www.paypal.com', 'Home'), browser='x', app_reads=[('y', 'z')])
+        self.assertTrue(d['private']); rb.assert_not_called(); ra.assert_not_called()
+
+    def test_electron_bridge_when_on(self):
+        d, rb, ra = self.look('ClickUp', cdp_peek=('app.clickup.com', 'Tasks'), cdp=self.LONG)
+        self.assertEqual(d['path'], 'cdp'); ra.assert_not_called()
+
+    def test_electron_bridge_off_uses_accessibility_and_never_restarts(self):
+        with mock.patch('zuka_cdp.ensure_app') as ea, mock.patch('zuka_cdp.port_open', return_value=False):
+            d, rb, ra = self.look('ClickUp', cdp_peek=None, app_reads=[(self.LONG, 'Tasks')])
+        ea.assert_not_called(); self.assertEqual(d['path'], 'head')
+
+    def test_electron_denied_title_not_fetched(self):
+        with mock.patch.object(s, 'read_cdp') as rc:
+            d, rb, ra = self.look('ClickUp', cdp_peek=('app.clickup.com', 'Payment settings'), cdp='secret')
+        self.assertTrue(d['private'])
+
+    def test_head_enough_skips_full(self):
+        d, rb, ra = self.look('Finder', app_reads=[(self.LONG, 'Downloads')])
+        self.assertEqual(ra.call_count, 1); self.assertEqual(d['path'], 'head')
+        self.assertTrue(ra.call_args.kwargs.get('head'))
+
+    def test_short_head_goes_to_full(self):
+        d, rb, ra = self.look('Terminal', app_reads=[('ls', 'zsh'), (self.LONG, 'zsh')])
+        self.assertEqual(ra.call_count, 2); self.assertEqual(d['path'], 'full')
+        self.assertTrue(ra.call_args_list[0].kwargs.get('head')); self.assertFalse(ra.call_args_list[1].kwargs.get('head'))
+
+    def test_read_this_goes_to_full(self):
+        d, rb, ra = self.look('Finder', deep=True, app_reads=[(self.LONG, 'Downloads'), (self.LONG * 2, 'Downloads')])
+        self.assertEqual(ra.call_count, 2); self.assertEqual(d['path'], 'full')
+
+    def test_nothing_readable(self):
+        d, rb, ra = self.look('Preview', app_reads=[('', ''), ('', '')])
+        self.assertEqual(d['text'], ''); self.assertEqual(d['path'], '')
+        self.assertIn('image or a video', s.answer('explain this', d))
+
+    def test_private_title_on_head_drops_text_without_full_read(self):
+        d, rb, ra = self.look('Notes', app_reads=[('Card number 1', 'Checkout'), ('more', 'Checkout')])
+        self.assertTrue(d['private']); self.assertEqual(d['text'], ''); self.assertEqual(ra.call_count, 1)
+
+    def test_timeouts_are_passed_and_short(self):
+        calls = []
+        def fake_hands(args, timeout=20, head=False):
+            calls.append((timeout, head))
+            import subprocess
+            return subprocess.CompletedProcess(args, 0, '{"text":"hi","window":"w"}', '')
+        with mock.patch('zuka_apps.hands', side_effect=fake_hands):
+            s.read_app('Finder', head=True); s.read_app('Finder')
+        self.assertEqual(calls, [(s.T_HEAD, True), (s.T_FULL, False)])
+        self.assertLessEqual(s.T_HEAD, 3); self.assertLessEqual(s.T_PEEK, 3); self.assertLessEqual(s.T_TEXT, 4)
+
+    def test_timed_out_read_is_empty_not_an_error(self):
+        import subprocess
+        with mock.patch('zuka_apps.hands', side_effect=subprocess.TimeoutExpired('x', 1)):
+            self.assertEqual(s.read_app('Finder', head=True), ('', ''))
+
+    def test_browser_osascript_failure_is_empty(self):
+        with mock.patch.object(s, '_run', side_effect=OSError('x')):
+            self.assertEqual(s.peek_browser('Safari'), ('', ''))
+
+    def test_cdp_off_returns_none_without_connecting(self):
+        with mock.patch('zuka_cdp.port_open', return_value=False), mock.patch('zuka_cdp.open_tab') as ot:
+            self.assertIsNone(s.peek_cdp('ClickUp'))
+        ot.assert_not_called()
+
+    def test_masking_still_applies_on_every_path(self):
+        d, rb, ra = self.look('ClickUp', cdp_peek=('app.clickup.com', 'Tasks'), cdp='Hello\napi key is abc\nfin ' + self.LONG)
+        self.assertNotIn('abc', d['text'])
+
+
+class Warm(unittest.TestCase):
+    def test_answer_call_keeps_model_loaded_long(self):
+        seen = {}
+        class R:
+            def __enter__(s_): return s_
+            def __exit__(s_, *a): pass
+            def read(s_): return b'{"message":{"content":"It is a list."}}'
+        def op(req, timeout=0):
+            import json as j
+            seen['b'] = j.loads(req.data); return R()
+        with mock.patch('zuka_chat.enabled', return_value=True), mock.patch('zuka_chat._up', return_value=True), \
+                mock.patch('zuka_chat._touch'), mock.patch('urllib.request.urlopen', side_effect=op):
+            s.ask_brain('Notes', 'List', 'Sam wants milk.', 'explain this')
+        self.assertEqual(seen['b']['keep_alive'], '30m')
+
+    def test_warm_sends_empty_prompt_and_quiet_when_off(self):
+        seen = {}
+        class R:
+            def __enter__(s_): return s_
+            def __exit__(s_, *a): pass
+            def read(s_): return b'{}'
+        def op(req, timeout=0):
+            import json as j
+            seen['b'] = j.loads(req.data); seen['u'] = req.full_url; return R()
+        with mock.patch('zuka_chat.enabled', return_value=True), mock.patch('zuka_chat._up', return_value=True), \
+                mock.patch('zuka_chat._touch'), mock.patch('urllib.request.urlopen', side_effect=op):
+            self.assertTrue(s.warm())
+        self.assertEqual(seen['b']['prompt'], ''); self.assertEqual(seen['b']['keep_alive'], '30m'); self.assertTrue(seen['u'].endswith('/api/generate'))
+        with mock.patch('zuka_chat.enabled', return_value=False), mock.patch('urllib.request.urlopen') as u:
+            self.assertFalse(s.warm())
+        u.assert_not_called()
+
+    def test_no_warm_thread_under_tests(self):
+        s._warm['at'] = 0
+        with mock.patch('threading.Thread') as th:
+            s._warm_async()
+        th.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

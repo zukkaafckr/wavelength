@@ -148,62 +148,130 @@ _BROWSER_AS = {
     'safari': 'tell application "Safari"\nif (count of windows) = 0 then return ""\nreturn (do JavaScript "%s" in current tab of front window)\nend tell',
     'chrome': 'tell application "Google Chrome"\nif (count of windows) = 0 then return ""\nreturn (execute (active tab of front window) javascript "%s")\nend tell',
 }
+# Hard time limits per read path (seconds). A path that cannot answer in time is dropped and the next one tries: bridge -> head -> full.
+T_PEEK = 3          # host + title of a tab (a browser with page JS off answers with an error at once; this only caps a hang)
+T_TEXT = 4          # page text from a browser tab or an Electron page
+T_HEAD = 3          # accessibility first screenful (about 0.3 s when healthy)
+T_FULL = 8          # accessibility full read (5 to 12 s on a heavy window)
+SHORT = 400         # a first screenful shorter than this triggers the full read
+CDP_APPS = ('ClickUp',)   # Electron apps read through zuka_cdp when their page bridge is already on (never restarted to enable it)
 
 
-def _tab_js(app, expr):
-    """The JSON object `expr` evaluates to in the active tab, or {}."""
+def _tab_js(app, expr, timeout=T_PEEK):
+    """The JSON object `expr` evaluates to in the active tab, or {} (no window, page JS off, error or timeout: all quick)."""
     kind = BROWSERS.get(app)
     try:
         if kind == 'brave':
-            import zuka_brave
-            v = zuka_brave.js(expr, '')
-            return json.loads(v) if isinstance(v, str) else (v or {})
-        r = _run(['osascript', '-e', _BROWSER_AS[kind] % expr.replace('"', '\\"')], 8)
+            import zuka_brave   # same osascript bridge as brave-bridge read, with a short limit instead of zuka_brave.js's 20 s
+            wrapped = '(function(){try{return (%s)}catch(e){return ""}})()' % expr
+            v = zuka_brave._osa_args(zuka_brave._FIND_TAB, ['', wrapped], timeout)
+            return json.loads(v) if v not in ('', '__notab__', '__err__', 'missing value') else {}
+        r = _run(['osascript', '-e', _BROWSER_AS[kind] % expr.replace('"', '\\"')], timeout)
         return json.loads((r.stdout or '').strip() or '{}') if r.returncode == 0 else {}
     except Exception:
         return {}
 
 
 def peek_browser(app):
-    """(host, title) of the active tab, read before any page text so a banking page is never read."""
-    d = _tab_js(app, _PEEK)
+    """(host, title) of the active tab, read before any page text so a banking page is never read. ('', '') when there is no readable tab."""
+    d = _tab_js(app, _PEEK, T_PEEK)
     return d.get('host', '') or '', d.get('title', '') or ''
 
 
 def read_browser(app):
-    """Text of the active tab (Brave goes through zuka_brave, the same bridge as brave-bridge read)."""
-    return _tab_js(app, _TEXT).get('text', '') or ''
+    """Text of the active tab."""
+    return _tab_js(app, _TEXT, T_TEXT).get('text', '') or ''
 
 
-def read_app(app):
-    """(text, window title) from the app's accessibility tree, via zuka_apps.hands_read."""
+def _cdp_js(app, expr, timeout):
+    """Evaluate expr in the Electron app's page through zuka_cdp; None when the bridge is off or anything fails. Never starts or restarts the app."""
+    t = None
+    try:
+        import zuka_cdp
+        if app not in zuka_cdp.PORTS or not zuka_cdp.port_open(app):
+            return None
+        t = zuka_cdp.open_tab(app)
+        if not t: return None
+        t.s.settimeout(timeout)
+        return t.js(expr)
+    except Exception:
+        return None
+    finally:
+        try:
+            t and t.close()
+        except Exception:
+            pass
+
+
+def peek_cdp(app):
+    """(host, title) of the Electron app's page, or None when the page bridge is not on."""
+    v = _cdp_js(app, _PEEK, T_PEEK)
+    try:
+        d = json.loads(v) if isinstance(v, str) else None
+    except ValueError:
+        d = None
+    return (d.get('host', '') or '', d.get('title', '') or '') if isinstance(d, dict) else None
+
+
+def read_cdp(app):
+    v = _cdp_js(app, _TEXT, T_TEXT)
+    try:
+        return (json.loads(v) if isinstance(v, str) else {}).get('text', '') or ''
+    except ValueError:
+        return ''
+
+
+def read_app(app, head=False, timeout=None):
+    """(text, window title) from the app's accessibility tree. head=True is the first screenful only (fast)."""
+    timeout = timeout or (T_HEAD if head else T_FULL)
     try:
         import zuka_apps
-        d = zuka_apps.hands_read(app) or {}
+        r = zuka_apps.hands(['read', app], timeout=timeout, head=head)
+        d = json.loads(r.stdout) or {}
         return d.get('text', '') or '', d.get('window', '') or ''
     except Exception:
         return '', ''
 
 
-def look():
-    """-> dict(app, title, host, text, private). The text is masked and capped, and is empty when private. Never stored."""
+def look(deep=False):
+    """-> dict(app, title, host, text, private, path). The text is masked and capped, and is empty when private. Never stored.
+    Read order, each path with its own hard limit: page bridge (browser tab / Electron page) -> accessibility first screenful ->
+    accessibility full read (only when the first screenful is short or deep=True, for 'read this'). Host and title are read first so
+    a private page is never fetched. path says which one answered (a label, never window content)."""
     app, _ = front()
-    blank = {'app': app, 'title': '', 'host': '', 'text': '', 'private': False}
+    blank = {'app': app, 'title': '', 'host': '', 'text': '', 'private': False, 'path': ''}
     if not app:
         return blank
     if denied(app):
         return dict(blank, private=True)
+    text, title, host, path = '', '', '', ''
     if app in BROWSERS:
         host, title = peek_browser(app)
         if denied(app, title, host):
             return dict(blank, title=title, host=host, private=True)
-        text = read_browser(app)
-    else:
-        text, title = read_app(app)
-        host = ''
+        if host or title:
+            text = read_browser(app)
+            path = 'bridge' if text.strip() else ''
+    elif app in CDP_APPS:
+        pk = peek_cdp(app)
+        if pk is not None:
+            host, title = pk
+            if denied(app, title, host):
+                return dict(blank, title=title, host=host, private=True)
+            text = read_cdp(app)
+            path = 'cdp' if text.strip() else ''
+    if not text.strip():
+        text, t2 = read_app(app, head=True)
+        title, path = title or t2, 'head'
         if denied(app, title):   # the window title only arrives with the text; a private window's text is dropped here, unused
             return dict(blank, title=title, private=True)
-    return {'app': app, 'title': title, 'host': host, 'text': cap(mask(text)), 'private': False}
+        if deep or len(text.strip()) < SHORT:
+            full, t3 = read_app(app)
+            if len(full.strip()) > len(text.strip()):
+                text, title, path = full, title or t3, 'full'
+            if denied(app, title):
+                return dict(blank, title=title, private=True)
+    return {'app': app, 'title': title, 'host': host, 'text': cap(mask(text)), 'private': False, 'path': path if text.strip() else ''}
 
 
 # ---- the local brain ----
@@ -230,6 +298,40 @@ def _for_model(text, limit=2600):
     return cap(text, limit, int(limit * .75))
 
 
+KEEP_ALIVE = '30m'     # the answer call keeps the model loaded this long after each use
+_warm = {'at': 0.0}
+
+
+def warm():
+    """Load the local model now (empty prompt, no generation) and keep it for KEEP_ALIVE. Quiet no-op when the brain is off. Never raises."""
+    try:
+        import zuka_chat
+        if not zuka_chat.enabled(): return False
+        if not zuka_chat._up() and not zuka_chat.ensure_server(): return False
+        body = {'model': zuka_chat.MODEL, 'prompt': '', 'stream': False, 'keep_alive': KEEP_ALIVE}
+        req = urllib.request.Request(zuka_chat._url() + '/api/generate', json.dumps(body).encode(), {'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            r.read()
+        zuka_chat._touch()
+        return True
+    except Exception:
+        return False
+
+
+def _warm_async(every=240):
+    """Background warm ping, at most once per `every` seconds; skipped under tests."""
+    if 'unittest' in sys.modules or 'pytest' in sys.modules or os.environ.get('ZUKA_SCREEN_NO_WARM'):
+        return
+    now = time.time()
+    if now - _warm['at'] < every: return
+    _warm['at'] = now
+    import threading
+    threading.Thread(target=warm, daemon=True).start()
+
+
+_warm_async()   # first import (the first screen phrase, or app start if something imports this) starts loading the model
+
+
 def ask_brain(app, title, text, question):
     """1 to 3 spoken sentences from the local model, or None when it cannot run or says it needs more."""
     try:
@@ -237,7 +339,7 @@ def ask_brain(app, title, text, question):
         if not text or not zuka_chat.enabled(): return None
         if not zuka_chat._up() and not zuka_chat.ensure_server(): return None
         user = f"Question: {question}\nApp: {app}\nWindow title: {title}\n\nTEXT FROM THE WINDOW:\n{_for_model(text)}"
-        body = {'model': zuka_chat.MODEL, 'stream': False, 'keep_alive': f'{zuka_chat.IDLE_SECS // 60}m',
+        body = {'model': zuka_chat.MODEL, 'stream': False, 'keep_alive': KEEP_ALIVE,
                 'options': {'num_predict': 100, 'temperature': .2, 'num_ctx': 3072},
                 'messages': [{'role': 'system', 'content': _SYS}, {'role': 'user', 'content': user}]}
         req = urllib.request.Request(zuka_chat._url() + '/api/chat', json.dumps(body).encode(), {'Content-Type': 'application/json'})
@@ -321,7 +423,8 @@ def handle(t, raw=''):
         return None
     if r == 'more':
         return read_more()
-    d = look()
+    _warm_async()   # load the model while the window is read, so the first answer is never cold
+    d = look(deep=(r == 'read'))
     if r == 'read':
         if not d['app']: return "I can't tell which window is in front."
         if d['private']: return PRIVATE
